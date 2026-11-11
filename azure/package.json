@@ -1,0 +1,15 @@
+{
+  "name": "aayush-tv-minter-azure",
+  "version": "1.0.0",
+  "description": "Azure Functions host for the Aayush TV minter: /api/stream (techjail) and /api/resolve (Premium). Deployed by GitHub Actions; the Vercel deployment of the same repo uses api/*.js instead.",
+  "main": "src/functions/*.js",
+  "scripts": {
+    "start": "func start"
+  },
+  "dependencies": {
+    "@azure/functions": "^4.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
