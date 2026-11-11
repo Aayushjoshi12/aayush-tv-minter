@@ -560,12 +560,15 @@ const BACKUPS = {
   ],
   "bein-sports-mena-4": [
     { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/94/" },
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=VIP%20beIN%20SPORTS%204%20FHD&code=&user=cdnlivetv&plan=free" },
   ],
   "bein-sports-mena-5": [
     { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/95/" },
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=VIP%20beIN%20SPORTS%205%20FHD&code=&user=cdnlivetv&plan=free" },
   ],
   "bein-sports-mena-6": [
     { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/96/" },
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=VIP%20beIN%20SPORTS%206%20FHD&code=&user=cdnlivetv&plan=free" },
   ],
   "bein-sports-xtra": [
     { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20Sports%20Xtra%20FHD%20US&code=&user=cdnlivetv&plan=free" },
