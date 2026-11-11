@@ -256,18 +256,6 @@ const BACKUPS = {
   "bein-sports": [
     { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1836244" },
   ],
-  "bein-sports-mena-2": [
-    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/92/" },
-  ],
-  "bein-sports-mena-7": [
-    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/97/" },
-  ],
-  "bein-sports-mena-8": [
-    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/98/" },
-  ],
-  "bein-sports-mena-9": [
-    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/99/" },
-  ],
   "canal-sport-2-pl": [
     { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Canal%2B%20Sport%202%20FHD%20PL&code=&user=cdnlivetv&plan=free" },
   ],
@@ -554,21 +542,6 @@ const BACKUPS = {
     { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1660409" },
     { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20Sports%203%20HD%20FR&code=&user=cdnlivetv&plan=free" },
     { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/118/" },
-  ],
-  "bein-sports-mena-3": [
-    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/93/" },
-  ],
-  "bein-sports-mena-4": [
-    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/94/" },
-    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=VIP%20beIN%20SPORTS%204%20FHD&code=&user=cdnlivetv&plan=free" },
-  ],
-  "bein-sports-mena-5": [
-    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/95/" },
-    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=VIP%20beIN%20SPORTS%205%20FHD&code=&user=cdnlivetv&plan=free" },
-  ],
-  "bein-sports-mena-6": [
-    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/96/" },
-    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=VIP%20beIN%20SPORTS%206%20FHD&code=&user=cdnlivetv&plan=free" },
   ],
   "bein-sports-xtra": [
     { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20Sports%20Xtra%20FHD%20US&code=&user=cdnlivetv&plan=free" },
@@ -949,15 +922,17 @@ export default async function handler(req, res) {
   // original order.
   const orderSources = (bintv, direct, checked) => {
     const directOk = direct.filter((s) => s.ok).sort((a, b) => a.ms - b.ms);
-    // Verified embeds, fastest first — except 104game, which goes
-    // last among them: its pages load fast but its streams are dead
-    // (its upstream, trendplace.top, shows "STREAM IS OFFLINE" —
-    // seen on DAZN LaLiga 5x and ESPN2, 2026-11-11). The fastest
+    // Verified embeds, fastest first — except 104game and
+    // TVNow247, which go last among them: their pages load fast but
+    // their streams are dead (104game's upstream, trendplace.top,
+    // shows "STREAM IS OFFLINE" — DAZN LaLiga 5x, ESPN2; TVNow247's
+    // beIN players load black at 00:00 and never start even after
+    // pressing Play — MENA 2 and MENA 4, 2026-11-11). The fastest
     // source that actually plays should run first, not the fastest
     // page that opens on a dead screen.
     const verified = checked.filter((s) => s.ok).sort((a, b) => a.ms - b.ms);
-    const verifiedPlayable = verified.filter((s) => s.source !== "104game");
-    const verified104 = verified.filter((s) => s.source === "104game");
+    const verifiedPlayable = verified.filter((s) => s.source !== "104game" && s.source !== "TVNow247");
+    const verified104 = verified.filter((s) => s.source === "104game" || s.source === "TVNow247");
     const unverified = checked.filter((s) => !s.ok);
     const rest = [
       ...(bintv ? [bintv] : []),
