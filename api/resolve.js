@@ -522,7 +522,187 @@ const BACKUPS = {
   "tnt-sports-5": [
     { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1004550" },
   ],
-};
+
+  "arena-sport-1-bih": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/2011095" },
+  ],
+  "bein-max-4-francais": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20Sports%20Max%204%20HD%20FR&code=&user=cdnlivetv&plan=free" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/494/" },
+  ],
+  "bein-max-5-francais": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20Sports%20Max%205%20HD%20FR&code=&user=cdnlivetv&plan=free" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/495/" },
+  ],
+  "bein-max-6-francais": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20Sports%20Max%206%20HD%20FR&code=&user=cdnlivetv&plan=free" },
+  ],
+  "bein-max-7-francais": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20Sports%20Max%207%20HD%20FR&code=&user=cdnlivetv&plan=free" },
+  ],
+  "bein-sports-francais-1": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1660413" },
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%201%20FR%20HD&code=&user=cdnlivetv&plan=free" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/116/" },
+  ],
+  "bein-sports-francais-2": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1660411" },
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20SPORTS%202%20FR%20HD&code=&user=cdnlivetv&plan=free" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/117/" },
+  ],
+  "bein-sports-francais-3": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1660409" },
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20Sports%203%20HD%20FR&code=&user=cdnlivetv&plan=free" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/118/" },
+  ],
+  "bein-sports-mena-3": [
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/93/" },
+  ],
+  "bein-sports-mena-4": [
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/94/" },
+  ],
+  "bein-sports-mena-5": [
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/95/" },
+  ],
+  "bein-sports-mena-6": [
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/96/" },
+  ],
+  "bein-sports-xtra": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=beIN%20Sports%20Xtra%20FHD%20US&code=&user=cdnlivetv&plan=free" },
+  ],
+  "canal-sport-6-pl": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/2011083" },
+  ],
+  "dazn-1-germany": [
+    { kind: "embed", source: "104game", url: "https://104game.click/player/1/123" },
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/317036" },
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=DAZN%201%20FHD%20DE&code=&user=cdnlivetv&plan=free" },
+  ],
+  "dazn-1-italia": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/317036" },
+  ],
+  "dazn-1-portugal": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/317036" },
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=DAZN%201%20FHD%20PT&code=&user=cdnlivetv&plan=free" },
+  ],
+  "dazn-1-usa": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/317036" },
+  ],
+  "dazn-2-germany": [
+    { kind: "embed", source: "104game", url: "https://104game.click/player/1/124" },
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/317037" },
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=DAZN%202%20FHD%20DE&code=&user=cdnlivetv&plan=free" },
+  ],
+  "dazn-2-spain": [
+    { kind: "embed", source: "104game", url: "https://104game.click/player/1/57" },
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/317037" },
+  ],
+  "eleven-sports-1": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Eleven%20Sports%201%20FHD%20PL&code=&user=cdnlivetv&plan=free" },
+  ],
+  "eleven-sports-2": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Eleven%20Sports%202%20HD%20PL&code=&user=cdnlivetv&plan=free" },
+  ],
+  "eleven-sports-3": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Eleven%20Sports%203%20FHD%20PL&code=&user=cdnlivetv&plan=free" },
+  ],
+  "eleven-sports-4": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Eleven%20Sports%204%20FHD%20PL&code=&user=cdnlivetv&plan=free" },
+  ],
+  "fox-sports-501": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Fox%20Sports%20501%20AU&code=&user=cdnlivetv&plan=free" },
+  ],
+  "fox-sports-502": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Fox%20Sports%20502%20AU&code=&user=cdnlivetv&plan=free" },
+  ],
+  "fox-sports-503": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=FOX%20Sports%20503%20HD%20AU&code=&user=cdnlivetv&plan=free" },
+  ],
+  "fox-sports-505": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=FOX%20Sports%20505%20HD%20AU&code=&user=cdnlivetv&plan=free" },
+  ],
+  "fox-sports-506": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=FOX%20Sports%20506%20HD%20AU&code=&user=cdnlivetv&plan=free" },
+  ],
+  "hub-sports-1-singapore": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/2065811" },
+  ],
+  "hub-sports-2-singapore": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/2065810" },
+  ],
+  "hub-sports-3-singapore": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/2065809" },
+  ],
+  "hub-sports-4-singapore": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/2065808" },
+  ],
+  "hub-sports-5-singapore": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/2065807" },
+  ],
+  "polsat-sport-1": [
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/47/" },
+  ],
+  "polsat-sport-2": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Polsat%20Sport%202%20FHD%20PL&code=&user=cdnlivetv&plan=free" },
+  ],
+  "polsat-sport-3": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Polsat%20Sport%203%20FHD%20PL&code=&user=cdnlivetv&plan=free" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/129/" },
+  ],
+  "premier-sports-1-ie": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1032487" },
+  ],
+  "premier-sports-2-ie": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1032486" },
+  ],
+  "sky-sport-arena-it": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/692434" },
+  ],
+  "sky-sport-calcio-it": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/692415" },
+  ],
+  "sky-sport-f1-italia": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/692427" },
+  ],
+  "sky-sport-max-it": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1917708" },
+  ],
+  "sky-sport-motogp-it": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/692421" },
+  ],
+  "sky-sport-tennis-it": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/692432" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/576/" },
+  ],
+  "sport-tv1": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/148671" },
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%201%20FHD%20PT&code=&user=cdnlivetv&plan=free" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/49/" },
+  ],
+  "sport-tv2": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/148670" },
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%202%20FHD%20PT&code=&user=cdnlivetv&plan=free" },
+  ],
+  "sport-tv3": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/148669" },
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%203%20HD%20PT&code=&user=cdnlivetv&plan=free" },
+  ],
+  "sport-tv4": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/148668" },
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%204%20HD%20PT&code=&user=cdnlivetv&plan=free" },
+  ],
+  "sport-tv5": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/148667" },
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Sport%20TV%205%20HD%20PT&code=&user=cdnlivetv&plan=free" },
+  ],
+  "tudn": [
+    { kind: "embed", source: "104game", url: "https://104game.click/player/1/68" },
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=TUDN%20UHD%20US&code=&user=cdnlivetv&plan=free" },
+    { kind: "embed", source: "StreamTP", url: "https://streamtp-golden1.click/global1.php?stream=tudn_usa" },
+  ],
+  "willow-cricket-2": [
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/598/" },
+  ],};
 
 // Direct native streams (added 2026-11-11): DaddyLive's
 // player9.json DOES list direct https .m3u8 feeds for two of the
@@ -556,7 +736,10 @@ const DIRECT = {
   "premier-sports-2": [
     { source: "Premier Sports 2 (direct)", url: "https://amg19223-amg19223c4-amgplt0351.playout.now3.amagi.tv/playlist/amg19223-amg19223c4-amgplt0351/playlist.m3u8" },
   ],
-};
+
+  "premier-sports-2-ie": [
+    { source: "Premier Sports 2 IE (direct)", url: "https://amg19223-amg19223c4-amgplt0351.playout.now3.amagi.tv/playlist/amg19223-amg19223c4-amgplt0351/playlist.m3u8" },
+  ],};
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
@@ -659,7 +842,10 @@ async function manifestLoads(url) {
       8000
     );
     if (!res.ok) return false;
-    if (res.headers.get("access-control-allow-origin") !== "*") return false;
+    const cors = res.headers.get("access-control-allow-origin");
+    // The browser accepts "*" or its own origin; a feed that
+    // answers our Origin with our origin plays fine in the site.
+    if (cors !== "*" && cors !== "https://aayushlife.live") return false;
     const text = await res.text();
     return text.startsWith("#EXTM3U");
   } catch {
@@ -760,12 +946,21 @@ export default async function handler(req, res) {
   // original order.
   const orderSources = (bintv, direct, checked) => {
     const directOk = direct.filter((s) => s.ok).sort((a, b) => a.ms - b.ms);
+    // Verified embeds, fastest first — except 104game, which goes
+    // last among them: its pages load fast but its streams are dead
+    // (its upstream, trendplace.top, shows "STREAM IS OFFLINE" —
+    // seen on DAZN LaLiga 5x and ESPN2, 2026-11-11). The fastest
+    // source that actually plays should run first, not the fastest
+    // page that opens on a dead screen.
     const verified = checked.filter((s) => s.ok).sort((a, b) => a.ms - b.ms);
+    const verifiedPlayable = verified.filter((s) => s.source !== "104game");
+    const verified104 = verified.filter((s) => s.source === "104game");
     const unverified = checked.filter((s) => !s.ok);
     const rest = [
       ...(bintv ? [bintv] : []),
       ...directOk.map(({ ms, ...s }) => s),
-      ...verified.map(({ ms, ...s }) => s),
+      ...verifiedPlayable.map(({ ms, ...s }) => s),
+      ...verified104.map(({ ms, ...s }) => s),
       ...unverified.map(({ ms, ...s }) => s),
     ];
     // A direct stream whose manifest failed the server check is
