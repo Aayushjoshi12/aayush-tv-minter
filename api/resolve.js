@@ -24,6 +24,9 @@
 // one plays:
 //   1. BINTV native — the signed .m3u8, but only if its manifest
 //      actually loads (a dead signed link is skipped, not returned).
+//   1b. Direct native streams (beIN USA, ESPN LatAm — DIRECT
+//      below): real .m3u8 feeds that play natively in the site's
+//      own player and start fastest. Checked the same way.
 //   2. Backup embeds — player pages from other hosts, found by
 //      reverse-engineering DaddyLive's public player JSONs
 //      (daddylive.mov/player/playerN.json, 11 Nov 2026). Sites with
@@ -87,12 +90,9 @@ const CHANNELS = {
 //    player2.json = streamtp). player14.json is BINTV itself.
 //  - DaddyLive watch pages: /live/stream=<Channel-Name>&source=...
 //  - CricHD: per-channel watch pages.
-// No backup publishes a direct .m3u8 for these channels (the one
-// direct .m3u8 list found, DaddyLive player9.json, only covers ESPN
-// US over plain http, which cannot play on the site's https page),
-// so backups are embeds: the site shows them in its iframe player.
-// DAZN LaLiga and DAZN 1 Spain have no backup anywhere else —
-// their only fallbacks are the embeds below.
+// Most backups are embeds: the site shows them in its iframe
+// player. DAZN LaLiga and DAZN 1 Spain have no backup anywhere
+// else — their only fallbacks are the embeds below.
 const BACKUPS = {
   "dazn-laliga": [
     { kind: "embed", source: "104game", url: "https://104game.click/player/1/51" },
@@ -126,6 +126,28 @@ const BACKUPS = {
   "dazn-1-es": [
     { kind: "embed", source: "104game", url: "https://104game.click/player/1/56" },
     { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/2139027" },
+  ],
+};
+
+// Direct native streams (added 2026-11-11): DaddyLive's
+// player9.json DOES list direct https .m3u8 feeds for two of the
+// brands — beIN Sports USA and ESPN Latin America. They are not
+// the exact regional variants the tiles name (USA, not MENA 1;
+// Latin America, not US), but they are real direct feeds of the
+// same brands, their manifests and segments load with CORS *,
+// and they play natively in the site's own <video> player —
+// starting far faster than any heavy embed page. They are checked
+// with manifestLoads like BINTV and slotted in after BINTV and
+// before the embeds. No direct feed exists in player9.json for
+// DAZN LaLiga, Movistar LaLiga, Sky PL/Main Event or TNT 1.
+// (TulaWatch needs a login for every channel, so it cannot be
+// used; DamiTV's API answered 403 on 11 Nov 2026.)
+const DIRECT = {
+  "bein-mena-1": [
+    { source: "beIN USA (direct)", url: "https://tvsen6.aynaott.com/beinsports/index.m3u8" },
+  ],
+  "espn": [
+    { source: "ESPN LatAm (direct)", url: "https://barinaslive1.boldmss.com/ESPN/ESPN.isml/ESPN.m3u8" },
   ],
 };
 
@@ -282,12 +304,22 @@ export default async function handler(req, res) {
     }
     return null;
   })();
+  const directP = Promise.all(
+    (DIRECT[key] || []).map(async (d) => {
+      const start = Date.now();
+      const ok = await manifestLoads(d.url);
+      return { kind: "hls", source: d.source, url: d.url, expires: null, ok, ms: ok ? Date.now() - start : null };
+    })
+  );
   const backups = BACKUPS[key] || [];
   const checkedP = Promise.all(
     backups.map(async (b) => {
       const ms = await pageLoads(b.url);
       return { kind: "embed", source: b.source, url: b.url, expires: null, ok: ms !== null, ms };
     })
+  );
+  const restP = Promise.all([directP, checkedP]).then(
+    ([direct, checked]) => ({ kind: "rest", direct, checked })
   );
   const sendSources = (sources) => {
     if (!sources.length) {
@@ -302,29 +334,32 @@ export default async function handler(req, res) {
       sources,
     });
   };
-  // Order: BINTV native first when it works, then working embeds
-  // fastest first, then the ones whose pages did not answer, in
-  // their original order.
-  const orderSources = (bintv, checked) => {
+  // Order: BINTV native first when it works, then working direct
+  // native streams fastest first, then working embeds fastest
+  // first, then the ones whose pages did not answer, in their
+  // original order.
+  const orderSources = (bintv, direct, checked) => {
+    const directOk = direct.filter((s) => s.ok).sort((a, b) => a.ms - b.ms);
     const verified = checked.filter((s) => s.ok).sort((a, b) => a.ms - b.ms);
     const unverified = checked.filter((s) => !s.ok);
     return [
       ...(bintv ? [bintv] : []),
+      ...directOk.map(({ ms, ...s }) => s),
       ...verified.map(({ ms, ...s }) => s),
       ...unverified.map(({ ms, ...s }) => s),
     ];
   };
   const first = await Promise.race([
     bintvP.then((b) => ({ kind: "bintv", bintv: b })),
-    checkedP.then((checked) => ({ kind: "backups", checked })),
+    restP,
   ]);
   if (first.kind === "bintv" && first.bintv) {
     return sendSources([first.bintv]);
   }
-  if (first.kind === "backups") {
-    return sendSources(orderSources(null, first.checked));
+  if (first.kind === "rest") {
+    return sendSources(orderSources(null, first.direct, first.checked));
   }
-  // BINTV finished first but failed: wait for the backup checks.
-  const checked = await checkedP;
-  return sendSources(orderSources(null, checked));
+  // BINTV finished first but failed: wait for the rest.
+  const { direct, checked } = await restP;
+  return sendSources(orderSources(null, direct, checked));
 }
