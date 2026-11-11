@@ -565,10 +565,14 @@ async function loklokFetch(path, opts = {}) {
       signal: controller.signal,
       ...(opts.body ? { method: "POST", body: opts.body } : {}),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      // Surface the upstream status so the ?loklok= debug mode can
+      // tell an Akamai 403 apart from a wrong response shape.
+      return { __status: res.status, __body: (await res.text()).slice(0, 200) };
+    }
     return await res.json();
-  } catch {
-    return null;
+  } catch (e) {
+    return { __status: 0, __body: String((e && e.message) || e).slice(0, 120) };
   } finally {
     clearTimeout(timer);
   }
@@ -589,6 +593,20 @@ async function loklokSearch(keyword) {
       ? j.data.searchResults
       : [];
   return list;
+}
+
+// Raw search result (with upstream status) for the ?loklok= debug mode.
+async function loklokSearchDebug(keyword) {
+  const j = await loklokFetch("/search/v1/searchWithKeyWord", {
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      searchKeyWord: keyword,
+      size: 50,
+      sort: "",
+      searchType: "",
+    }),
+  });
+  return j;
 }
 
 async function loklokPlay(title, year) {
@@ -934,8 +952,18 @@ export default async function handler(req, res) {
       if (query.length < 2) {
         return res.status(400).json({ error: "Query too short" });
       }
-      const items = await loklokSearch(query);
-      return res.status(200).json({ ok: true, source: "loklok", items });
+      const raw = await loklokSearchDebug(query);
+      const items =
+        raw && raw.data && Array.isArray(raw.data.searchResults)
+          ? raw.data.searchResults
+          : [];
+      return res.status(200).json({
+        ok: true,
+        source: "loklok",
+        items,
+        upstream: raw && raw.__status ? { status: raw.__status, body: raw.__body } : null,
+        rawKeys: raw && typeof raw === "object" ? Object.keys(raw).slice(0, 8) : null,
+      });
     }
     // --- LokLok (no-token) debug: full play chain for a title ---
     if (q.lokplay) {
