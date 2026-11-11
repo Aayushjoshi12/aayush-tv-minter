@@ -1,0 +1,31 @@
+# Deploy the Azure Functions package (azure/) to the Function App
+# aayush-tv-minter-kr-b7cqc2h0ewamhaaq whenever it changes.
+# This package holds BOTH functions: src/functions/stream.js
+# (the techjail minter) and src/functions/resolve.js (the Premium
+# resolver, Azure v4 form). The Vercel deployment of this repo
+# (api/*.js) is unaffected. Needs the repo secret
+# AZURE_FUNCTIONAPP_PUBLISH_PROFILE.
+name: Deploy to Azure Functions
+on:
+  push:
+    branches: [main]
+    paths:
+      - "azure/**"
+      - ".github/workflows/azure-deploy.yml"
+  workflow_dispatch:
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Install dependencies
+        run: npm ci --prefix azure
+      - name: Deploy to Azure Functions
+        uses: Azure/functions-action@v1
+        with:
+          app-name: "aayush-tv-minter-kr-b7cqc2h0ewamhaaq"
+          package: "./azure"
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
