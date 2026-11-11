@@ -619,6 +619,7 @@ export default async function handler(req, res) {
       // backup by title. The Astro catalogue is searched by the
       // title the page passes, then the first match is embedded.
       const title = String(q.title || "").trim();
+      const year = String(q.year || "").trim();
       if (title.length >= 2) {
         try {
           const { data } = await astroFetch(
@@ -628,11 +629,21 @@ export default async function handler(req, res) {
           if (items.length) {
             // Prefer an exact title match (the search can return
             // a similarly-named show first, e.g. "Dune: Prophecy"
-            // for "Dune"); otherwise take the first result.
-            const exact = items.find(
+            // for "Dune"); otherwise take the first result. When
+            // the page also passes a year, prefer the exact
+            // title+year match — otherwise "Dune" can return the
+            // 1984 film when the user tapped the 2021 one.
+            let first = items.find(
               (it) => it.title.toLowerCase() === title.toLowerCase()
-            );
-            const first = exact || items[0];
+            ) || items[0];
+            if (year) {
+              const byYear = items.find(
+                (it) =>
+                  it.title.toLowerCase() === title.toLowerCase() &&
+                  String(it.year) === year
+              );
+              if (byYear) first = byYear;
+            }
             const emb = await astroEmbed(
               first.tmdbId,
               first.type,
