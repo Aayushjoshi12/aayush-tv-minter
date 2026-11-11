@@ -30,9 +30,16 @@
 //      a public API (DaddyLive /api/events, DamiTV /api/streams) are
 //      used through that API; sites without one were reverse-
 //      engineered the same way BINTV was, and their per-channel
-//      player URLs are listed in BACKUPS below. Each embed is
-//      checked live (HTTP 200) before it is offered, so a dead
-//      backup never reaches the site.
+//      player URLs are listed in BACKUPS below.
+//   FASTEST FIRST (added 2026-11-11, per the user's "the source
+//   which loads faster should load first"): every check runs at the
+//   same time instead of one after another, each backup's answer
+//   time is measured, and the working embeds are ordered fastest
+//   first — so the site tries the quickest source first and the
+//   total wait is the slowest single check, not the sum of them.
+//   A backup whose page does not answer is still returned last,
+//   marked ok:false, so the site can offer it through its
+//   "Try next source" button instead of hiding it.
 //   3. The BINTV watch page, appended by the site itself as the
 //      last resort (same as before).
 // None of the backup hosts sends X-Frame-Options, and matchora
@@ -42,7 +49,7 @@
 // ENDPOINT: GET /api/resolve?ch=<key>
 //   -> 200 {"url", "expires", "kind", "source", "sources": [
 //        {"kind": "hls"|"embed", "source": "...", "url": "...",
-//         "expires": <epoch|null>}, ... ]}
+//         "expires": <epoch|null>, "ok": true|false}, ... ]}
 //      "url"/"kind"/"source" describe sources[0] (kept so older
 //      site versions keep working). "sources" is ordered best-first.
 //   -> 400 on unknown key. It (almost) never 502s now: even when
@@ -225,16 +232,20 @@ async function manifestLoads(url) {
 }
 
 async function pageLoads(url) {
-  // A backup embed is only offered if its player page answers.
+  // Check a backup embed's player page and measure how fast it
+  // answers. Returns the answer time in ms when the page loads,
+  // null when it does not — the handler orders working embeds
+  // fastest first, so the quickest source is tried first.
+  const start = Date.now();
   try {
     const res = await fetchWithTimeout(
       url,
       { "User-Agent": UA, Referer: BACKUP_REFERER },
       6000
     );
-    return res.ok;
+    return res.ok ? Date.now() - start : null;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -250,62 +261,70 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: "Unknown channel" });
   }
 
-  const sources = [];
-
-  // 1. BINTV native — but only when the signed manifest loads.
-  // When it works, return at once: no backup checks needed, and the
-  // fast path stays fast.
-  try {
-    const { url, expires } = await resolveBintv(path);
-    if (await manifestLoads(url)) {
-      sources.push({ kind: "hls", source: "BINTV", url, expires });
-      const first = sources[0];
-      return res.status(200).json({
-        url: first.url,
-        expires: first.expires,
-        kind: first.kind,
-        source: first.source,
-        sources,
-      });
+  // Every check runs at the same time, and whichever side is ready
+  // first decides the answer — so the total wait is the fastest
+  // side, not the sum of them, and a slow or hanging BINTV chain
+  // can never hold up the backups:
+  //   - BINTV resolves with a working manifest first: return the
+  //     native link at once (native always beats an embed).
+  //   - The backup checks finish first: return the embeds at once,
+  //     fastest first, without waiting for BINTV.
+  //   - BINTV finishes first but failed: wait for the backups,
+  //     then return the ordered list.
+  const bintvP = (async () => {
+    try {
+      const { url, expires } = await resolveBintv(path);
+      if (await manifestLoads(url)) {
+        return { kind: "hls", source: "BINTV", url, expires, ok: true };
+      }
+    } catch {
+      // BINTV down: fall through to the backups.
     }
-  } catch (e) {
-    // BINTV down: fall through to the backups.
-  }
-
-  // 2. Backup embeds. Verified pages (the page itself loads) come
-  // first; the rest are still returned afterwards, marked ok:false,
-  // so the site can offer them through its "Try next source" button
-  // instead of hiding them — a page that loads is not proof the
-  // stream inside it is alive, and a live check can flake.
+    return null;
+  })();
   const backups = BACKUPS[key] || [];
-  for (const b of backups) {
-    if (await pageLoads(b.url)) {
-      sources.push({ kind: "embed", source: b.source, url: b.url, expires: null, ok: true });
+  const checkedP = Promise.all(
+    backups.map(async (b) => {
+      const ms = await pageLoads(b.url);
+      return { kind: "embed", source: b.source, url: b.url, expires: null, ok: ms !== null, ms };
+    })
+  );
+  const sendSources = (sources) => {
+    if (!sources.length) {
+      return res.status(200).json({ url: null, expires: null, kind: null, source: null, sources: [] });
     }
-  }
-  for (const b of backups) {
-    if (!sources.some((s) => s.url === b.url)) {
-      sources.push({ kind: "embed", source: b.source, url: b.url, expires: null, ok: false });
-    }
-  }
-
-  // 3. If even the backups are all down, the list is empty and the
-  // site falls back to the watch page it already knows.
-  if (!sources.length) {
+    const first = sources[0];
     return res.status(200).json({
-      url: null,
-      expires: null,
-      kind: null,
-      source: null,
-      sources: [],
+      url: first.url,
+      expires: first.expires || null,
+      kind: first.kind,
+      source: first.source,
+      sources,
     });
+  };
+  // Order: BINTV native first when it works, then working embeds
+  // fastest first, then the ones whose pages did not answer, in
+  // their original order.
+  const orderSources = (bintv, checked) => {
+    const verified = checked.filter((s) => s.ok).sort((a, b) => a.ms - b.ms);
+    const unverified = checked.filter((s) => !s.ok);
+    return [
+      ...(bintv ? [bintv] : []),
+      ...verified.map(({ ms, ...s }) => s),
+      ...unverified.map(({ ms, ...s }) => s),
+    ];
+  };
+  const first = await Promise.race([
+    bintvP.then((b) => ({ kind: "bintv", bintv: b })),
+    checkedP.then((checked) => ({ kind: "backups", checked })),
+  ]);
+  if (first.kind === "bintv" && first.bintv) {
+    return sendSources([first.bintv]);
   }
-  const first = sources[0];
-  return res.status(200).json({
-    url: first.url,
-    expires: first.expires || null,
-    kind: first.kind,
-    source: first.source,
-    sources,
-  });
+  if (first.kind === "backups") {
+    return sendSources(orderSources(null, first.checked));
+  }
+  // BINTV finished first but failed: wait for the backup checks.
+  const checked = await checkedP;
+  return sendSources(orderSources(null, checked));
 }
