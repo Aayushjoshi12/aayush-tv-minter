@@ -338,6 +338,7 @@ async function net52Play(id) {
     // manifest's media to sit on a reachable CDN — freecdn4.top —
     // and rejects a manifest served only from nm-cdn2.top.)
     let valid = false;
+    let masterText = "";
     try {
       const target = decodeURIComponent(
         new URL(auto.manifestUrl).searchParams.get("manifest")
@@ -360,10 +361,60 @@ async function net52Play(id) {
         text.includes("nm-cdn2.top") && !usesReachableCdn;
       if (onlyUnreachableCdn) continue;
       valid = true;
+      masterText = text;
     } catch {
       continue;
     }
     if (!valid) continue;
+    // Slate check (2026-11-11): when the video site is throttling, it
+    // serves the SAME 10-minute "STOP — Too Many Requests" clip for
+    // every title — Dune and Project Hail Mary both point at file
+    // 220884, whose 720p variant is 60 segments totalling 599.7s.
+    // A real film is 90+ minutes, so a default variant shorter than
+    // 20 minutes is a slate, not the film: reject it so the caller
+    // falls back to the Astro backup instead of playing the warning.
+    // NOTE: the playlist's quality entries all point at the SAME
+    // master manifest (with a ?q= hint), so the variant URL must be
+    // read out of the master manifest text itself, not from the
+    // qualities list.
+    try {
+      const lines = masterText.split("\n");
+      let vTarget = "";
+      for (let i = 0; i < lines.length; i++) {
+        if (
+          lines[i].includes("#EXT-X-STREAM-INF") &&
+          lines[i].includes("1280x720")
+        ) {
+          vTarget = (lines[i + 1] || "").trim();
+          break;
+        }
+      }
+      if (!vTarget) {
+        // Fall back to the first variant URL in the master.
+        for (let i = 0; i < lines.length; i++) {
+          if (lines[i].startsWith("http")) {
+            vTarget = lines[i].trim();
+            break;
+          }
+        }
+      }
+      if (!vTarget) continue;
+      const vr = await fetchWithTimeout(
+        vTarget,
+        { "User-Agent": UA, Referer: NET52_REFERER },
+        10000
+      );
+      if (!vr.ok) continue;
+      const vText = await vr.text();
+      if (!vText.startsWith("#EXTM3U")) continue;
+      let total = 0;
+      for (const m of vText.matchAll(/#EXTINF:([\d.]+)/g)) {
+        total += parseFloat(m[1]);
+      }
+      if (total > 0 && total < 1200) continue;
+    } catch {
+      continue;
+    }
     const tracks = ((first && first.tracks) || [])
       .filter((t) => t && t.file)
       .map((t) => {
@@ -646,7 +697,21 @@ export default async function handler(req, res) {
                   it.title.toLowerCase() === title.toLowerCase() &&
                   String(it.year) === year
               );
-              if (byYear) first = byYear;
+              // If the user tapped a specific year and the backup does
+              // not carry that exact title+year, do NOT play a
+              // different year's film (e.g. Dune 1984 for Dune 2021):
+              // report no source instead of silently playing the
+              // wrong movie.
+              if (!byYear) {
+                return res.status(200).json({
+                  ok: true,
+                  source: null,
+                  kind: null,
+                  noSource: true,
+                  error: "No source found for this title.",
+                });
+              }
+              first = byYear;
             }
             const emb = await astroEmbed(
               first.tmdbId,
