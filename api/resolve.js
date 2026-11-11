@@ -71,14 +71,140 @@ const BACKUP_REFERER = "https://daddylive.mov/";
 
 // key -> player path, from the public channel feed (2026-11-11).
 const CHANNELS = {
-  "dazn-laliga": "fw2jrum9-448",
-  "movistar-laliga": "vowrwhdn-2491",
-  "sky-pl": "kzd3hrqz-4314",
-  "sky-main-event": "n58ajgfx-472",
-  "tnt-1": "e0lyrkhr-1002",
+  "arena-sport-1-bih": "pmk4006b-7099",
+  "bein-max-4-francais": "g8f0wpqc-2696",
+  "bein-max-5-francais": "kckkoedv-2594",
+  "bein-max-6-francais": "wqjlbwll-2258",
+  "bein-max-7-francais": "np4biwf3-3097",
+  "bein-sports": "u36ftfcy-7101",
+  "bein-sports-francais-1": "gbw09ann-983",
+  "bein-sports-francais-2": "ahl77cgo-3597",
+  "bein-sports-francais-3": "fcxpeb2i-9275",
   "bein-mena-1": "gh9m7u89-8471",
-  "espn": "o9bl8cai-7223",
+  "bein-sports-mena-2": "klk0j7p2-3347",
+  "bein-sports-mena-3": "ketbclv0-4795",
+  "bein-sports-mena-4": "pxx4l615-6526",
+  "bein-sports-mena-5": "59b89cub-6825",
+  "bein-sports-mena-6": "5u81h0on-8286",
+  "bein-sports-mena-7": "mmww1kss-3568",
+  "bein-sports-mena-8": "80ynbnuv-5382",
+  "bein-sports-mena-9": "ltcqnszh-6218",
+  "canal-sport-2-pl": "vz0b8dai-3533",
+  "canal-sport-3-pl": "f9q2whgc-7787",
+  "canal-sport-4-pl": "rcbsp9o1-5913",
+  "canal-sport-5-pl": "ayehdrp1-4306",
+  "canal-sport-6-pl": "qrmke5x4-2028",
+  "canal-sport-pl": "jr4cynbo-9272",
+  "cbs-sports-network": "9c2jwr40-3407",
+  "dazn-1-germany": "3dk8rxui-6212",
+  "dazn-1-italia": "gmoqoz7b-4945",
+  "dazn-1-portugal": "3zhczzbl-9086",
   "dazn-1-es": "sq26inyf-2660",
+  "dazn-1-usa": "jyqzet0b-2901",
+  "dazn-2-germany": "tnifspj6-852",
+  "dazn-2-spain": "0o3vlabk-4088",
+  "dazn-f1": "5rvazszz-6983",
+  "dazn-laliga": "fw2jrum9-448",
+  "eleven-sports-1": "gg28wwh4-6849",
+  "eleven-sports-2": "pw0y0gzx-7614",
+  "eleven-sports-3": "ytjrtde4-6087",
+  "eleven-sports-4": "boc7cv4y-6161",
+  "espn": "o9bl8cai-7223",
+  "espn-deportes": "6trsant7-1421",
+  "espn2": "33jhpzfr-936",
+  "espnews": "mftslez4-3364",
+  "espnu": "wqbwjjhf-9771",
+  "fox-deportes": "8p0wjr6t-3317",
+  "fox-sports-1": "f4ijr4sl-187",
+  "fox-sports-2": "p5562bwm-3285",
+  "fox-sports-501": "imifneoj-1417",
+  "fox-sports-502": "caxq9d5g-1854",
+  "fox-sports-503": "t1ilns5i-746",
+  "fox-sports-504": "m5ys2t2z-7410",
+  "fox-sports-505": "p0jkpm12-1140",
+  "fox-sports-506": "9hg9rzzh-2937",
+  "fox-sports-507": "s1npqmod-9335",
+  "go3-sport-1": "2tsl2cbn-6969",
+  "go3-sport-2": "gu0zawp0-8172",
+  "go3-sport-3": "gu0zawp0-5456",
+  "golf-channel": "p8wos5q1-1333",
+  "hub-sports-1-singapore": "2670rnlp-2693",
+  "hub-sports-2-singapore": "uxjju28j-2977",
+  "hub-sports-3-singapore": "91ieccpw-3489",
+  "hub-sports-4-singapore": "pgb1kdmf-8296",
+  "hub-sports-5-singapore": "tfrrx715-8124",
+  "mlb-network": "kbrqp0d5-1689",
+  "motogp-channel": "sv7a4sfc-9210",
+  "movistar-deportes": "gzli3jta-570",
+  "movistar-deportes-2": "1gv2rhxc-4292",
+  "movistar-deportes-3": "wtnngz3p-4867",
+  "movistar-laliga": "vowrwhdn-2491",
+  "movistar-plus": "b6a3cjbx-9022",
+  "nba-tv": "8tl2ksef-2775",
+  "nbc-sports-bay-area": "soipf80d-8441",
+  "nbc-sports-philadelphia": "03uxmg2p-8674",
+  "nfl-network": "a40czx8e-4022",
+  "nhl-network": "kelcwql2-1938",
+  "polsat-sport-1": "pi5dqsjd-8964",
+  "polsat-sport-2": "njs5pc6k-5347",
+  "polsat-sport-3": "r1ehwgde-9139",
+  "polsat-sport-fight": "mkr6nvqt-4662",
+  "premier-sports-1-ie": "nf1skh2l-1926",
+  "premier-sports-2-ie": "c8prf9yh-2498",
+  "sky-sport-1-nz": "8num3afh-8204",
+  "sky-sport-2-nz": "sl9un97j-4474",
+  "sky-sport-24": "1k3ckb2m-8796",
+  "sky-sport-3-nz": "ldfbs8gf-7885",
+  "sky-sport-4-nz": "h0ryosf9-1736",
+  "sky-sport-5-nz": "32f9u4no-5828",
+  "sky-sport-6-nz": "wghuk9nx-1967",
+  "sky-sport-7-nz": "dohvga1l-2284",
+  "sky-sport-8-nz": "asxdfczr-9050",
+  "sky-sport-9-nz": "kb1ngcei-9972",
+  "sky-sport-arena-it": "akfl7ls6-2231",
+  "sky-sport-bundesliga": "bsudwrf4-653",
+  "sky-sport-calcio-it": "gib0w25z-357",
+  "sky-sport-f1-italia": "t5mpn192-927",
+  "sky-sport-max-it": "jfgks9vt-7958",
+  "sky-sport-motogp-it": "z1b9nwhr-4813",
+  "sky-sport-select-nz": "b6ca3188-8449",
+  "sky-sport-tennis-it": "mssnlmj6-4172",
+  "sky-sport-uno": "pqd6qx47-4522",
+  "sky-sports": "jwrj2d6p-8874",
+  "sky-sports-action": "3ym6q5iy-878",
+  "sky-sports-cricket": "qfx4038p-95",
+  "sky-sports-f1": "f596f98r-6977",
+  "sky-sports-football": "a80q8j3i-2187",
+  "sky-sports-golf": "0bydvmgs-4755",
+  "sky-main-event": "n58ajgfx-472",
+  "sky-sports-mix": "kt8jus5e-7693",
+  "sky-sports-news": "sawtuw4t-1803",
+  "sky-pl": "kzd3hrqz-4314",
+  "sky-sports-racing": "2jlx4p7r-552",
+  "sky-sports-tennis": "kkbb5x8i-1991",
+  "sony-sports-network": "toarnao3-525",
+  "sony-sports-network-2": "umicawgj-6598",
+  "sony-sports-network-3": "iit0e7qs-6560",
+  "sony-sports-network-4": "dxclfs9n-2151",
+  "sony-sports-network-5": "oay9sxar-3985",
+  "sport-tv1": "oqq5c86g-7521",
+  "sport-tv2": "6dw9r22a-7192",
+  "sport-tv3": "dbo09jwh-5404",
+  "sport-tv4": "t218wwwk-3361",
+  "sport-tv5": "twg31g84-6394",
+  "sportdigital-fussball": "9bn5lr9r-5959",
+  "tennis-channel": "80nrh660-13",
+  "tnt-1": "e0lyrkhr-1002",
+  "tnt-sports-2": "it7aytqh-1540",
+  "tnt-sports-3": "bjarzxf9-1713",
+  "tnt-sports-4": "3u2rfhmp-8468",
+  "tsn1": "ieodbgj5-4982",
+  "tudn": "q2u5urq3-3910",
+  "tyc-sports-internacional": "gq4ysifk-1154",
+  "ufc-fight-pass-24-7": "c2g6ggzm-2981",
+  "unite8-sports-1-zee-caf": "tnxwmkhb-3003",
+  "willow-cricket": "spd8gpoh-6586",
+  "willow-cricket-2": "14quawd5-8819",
 };
 
 // Backup player pages, in the order the site should try them.
@@ -127,6 +253,275 @@ const BACKUPS = {
     { kind: "embed", source: "104game", url: "https://104game.click/player/1/56" },
     { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/2139027" },
   ],
+  "bein-sports": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1836244" },
+  ],
+  "bein-sports-mena-2": [
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/92/" },
+  ],
+  "bein-sports-mena-7": [
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/97/" },
+  ],
+  "bein-sports-mena-8": [
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/98/" },
+  ],
+  "bein-sports-mena-9": [
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/99/" },
+  ],
+  "canal-sport-2-pl": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Canal%2B%20Sport%202%20FHD%20PL&code=&user=cdnlivetv&plan=free" },
+  ],
+  "canal-sport-3-pl": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Canal%2B%20Sport%203%20FHD%20PL&code=&user=cdnlivetv&plan=free" },
+  ],
+  "canal-sport-4-pl": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Canal%2B%20Sport%204%20FHD%20PL&code=&user=cdnlivetv&plan=free" },
+  ],
+  "canal-sport-5-pl": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Canal%2B%20Sport%205%20FHD%20PL&code=&user=cdnlivetv&plan=free" },
+  ],
+  "canal-sport-pl": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Canal%2B%20Sport%20FHD%20PL&code=&user=cdnlivetv&plan=free" },
+  ],
+  "dazn-f1": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/2139025" },
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=DAZN%20F1%20FHD&code=&user=cdnlivetv&plan=free" },
+  ],
+  "espn-deportes": [
+    { kind: "embed", source: "104game", url: "https://104game.click/player/1/71" },
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1921358" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/375/" },
+  ],
+  "espn2": [
+    { kind: "embed", source: "104game", url: "https://104game.click/player/1/88" },
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1356493" },
+    { kind: "embed", source: "StreamTP", url: "https://streamtp-golden1.click/global1.php?stream=espn2" },
+  ],
+  "espnews": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/45578" },
+  ],
+  "espnu": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/90958" },
+  ],
+  "fox-deportes": [
+    { kind: "embed", source: "104game", url: "https://104game.click/player/1/70" },
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/90292" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/643/" },
+  ],
+  "fox-sports-1": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1520176" },
+    { kind: "embed", source: "StreamTP", url: "https://streamtp-golden1.click/global1.php?stream=fox1ar" },
+  ],
+  "fox-sports-2": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1520171" },
+    { kind: "embed", source: "StreamTP", url: "https://streamtp-golden1.click/global1.php?stream=fox2ar" },
+  ],
+  "fox-sports-507": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/646965" },
+  ],
+  "go3-sport-1": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1917657" },
+  ],
+  "go3-sport-2": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1917656" },
+  ],
+  "go3-sport-3": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1917655" },
+  ],
+  "golf-channel": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/2151721" },
+  ],
+  "mlb-network": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/2138998" },
+  ],
+  "movistar-deportes": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/25355" },
+  ],
+  "movistar-deportes-2": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Movistar%20Deportes%202%20FHD&code=&user=cdnlivetv&plan=free" },
+  ],
+  "nba-tv": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1920053" },
+  ],
+  "nfl-network": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/2139001" },
+  ],
+  "nhl-network": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/2151620" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/663/" },
+  ],
+  "sky-sport-1-nz": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sport%201%20NZ&code=&user=cdnlivetv&plan=free" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/588/" },
+  ],
+  "sky-sport-2-nz": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sport%202%20NZ&code=&user=cdnlivetv&plan=free" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/589/" },
+  ],
+  "sky-sport-24": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/692437" },
+  ],
+  "sky-sport-3-nz": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sport%203%20NZ&code=&user=cdnlivetv&plan=free" },
+  ],
+  "sky-sport-4-nz": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sport%204%20NZ&code=&user=cdnlivetv&plan=free" },
+  ],
+  "sky-sport-5-nz": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sport%205%20NZ&code=&user=cdnlivetv&plan=free" },
+  ],
+  "sky-sport-6-nz": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sport%206%20NZ&code=&user=cdnlivetv&plan=free" },
+  ],
+  "sky-sport-7-nz": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sport%207%20NZ&code=&user=cdnlivetv&plan=free" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/594/" },
+  ],
+  "sky-sport-8-nz": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sport%208%20NZ&code=&user=cdnlivetv&plan=free" },
+  ],
+  "sky-sport-9-nz": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sport%209%20NZ&code=&user=cdnlivetv&plan=free" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/596/" },
+  ],
+  "sky-sport-bundesliga": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1917532" },
+  ],
+  "sky-sport-select-nz": [
+    { kind: "embed", source: "CDNLiveTV", url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Sky%20Sport%20Select%20NZ&code=&user=cdnlivetv&plan=free" },
+  ],
+  "sky-sport-uno": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/692391" },
+  ],
+  "sky-sports": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/79481" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/36/" },
+  ],
+  "sky-sports-action": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1917635" },
+  ],
+  "sky-sports-cricket": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1917637" },
+  ],
+  "sky-sports-f1": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1917634" },
+  ],
+  "sky-sports-football": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1917622" },
+  ],
+  "sky-sports-golf": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1917633" },
+  ],
+  "sky-sports-mix": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1917632" },
+  ],
+  "sky-sports-news": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1917638" },
+  ],
+  "sky-sports-racing": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1917629" },
+  ],
+  "sky-sports-tennis": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1917628" },
+  ],
+  "sportdigital-fussball": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1697000" },
+  ],
+  "tennis-channel": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/811667" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/40/" },
+  ],
+  "tnt-sports-2": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1047261" },
+  ],
+  "tnt-sports-3": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1047262" },
+  ],
+  "tnt-sports-4": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1047263" },
+  ],
+  "tsn1": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/904216" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/111/" },
+  ],
+  "tyc-sports-internacional": [
+    { kind: "embed", source: "StreamTP", url: "https://streamtp-golden1.click/global1.php?stream=tycinternacional" },
+  ],
+  "willow-cricket": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/45463" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/346/" },
+  ],
+  "eurosport-1": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1913128" },
+  ],
+  "eurosport-2": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1913126" },
+  ],
+  "espn-3": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/890657" },
+    { kind: "embed", source: "StreamTP", url: "https://streamtp-golden1.click/global1.php?stream=espn3" },
+  ],
+  "dazn-2": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/317037" },
+  ],
+  "dazn-3": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/317038" },
+  ],
+  "dazn-4": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/317039" },
+  ],
+  "dazn-5": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/317040" },
+  ],
+  "dazn-combat": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1917694" },
+  ],
+  "bein-sports-2": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1660411" },
+  ],
+  "bein-sports-3": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1660409" },
+  ],
+  "cbs-sports-golazo-network": [
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/308/" },
+  ],
+  "premier-sports-1": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1032487" },
+  ],
+  "premier-sports-2": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1032486" },
+  ],
+  "star-sports-1": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/282677" },
+  ],
+  "star-sports-2": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/282673" },
+  ],
+  "star-sports-select-1": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/282675" },
+  ],
+  "star-sports-select-2": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/282676" },
+  ],
+  "supersport-premier-league": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/833281" },
+  ],
+  "supersport-football": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/144417" },
+  ],
+  "tsn-2": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/177345" },
+  ],
+  "sportsnet-one": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1920740" },
+    { kind: "embed", source: "TVNow247", url: "https://tvnow247.top/embed/411/" },
+  ],
+  "sportsnet-360": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1920742" },
+  ],
+  "tnt-sports-5": [
+    { kind: "embed", source: "Matchora", url: "https://matchora.to/embed/channel/1004550" },
+  ],
 };
 
 // Direct native streams (added 2026-11-11): DaddyLive's
@@ -148,6 +543,18 @@ const DIRECT = {
   ],
   "espn": [
     { source: "ESPN LatAm (direct)", url: "https://barinaslive1.boldmss.com/ESPN/ESPN.isml/ESPN.m3u8" },
+  ],
+  "golf-channel": [
+    { source: "GOLF Channel (direct)", url: "https://dash4.antik.sk/live/test_golf_channel/playlist.m3u8" },
+  ],
+  "espn-2-latin-america": [
+    { source: "ESPN 2 Latin America (direct)", url: "https://barinaslive1.boldmss.com/ESPN_2/ESPN_2.isml/ESPN_2.m3u8" },
+  ],
+  "espn-3-latin-america": [
+    { source: "ESPN 3 Latin America (direct)", url: "https://barinaslive1.boldmss.com/ESPN_3/ESPN_3.isml/ESPN_3.m3u8" },
+  ],
+  "premier-sports-2": [
+    { source: "Premier Sports 2 (direct)", url: "https://amg19223-amg19223c4-amgplt0351.playout.now3.amagi.tv/playlist/amg19223-amg19223c4-amgplt0351/playlist.m3u8" },
   ],
 };
 
@@ -239,13 +646,20 @@ async function manifestLoads(url) {
   // A signed link is only useful if its manifest actually loads —
   // BINTV's backend has been returning 404 for these all day, so a
   // link that fails here is skipped instead of handed to the site.
+  // The check mirrors what the browser needs: the request carries
+  // the site's Origin, and the manifest must answer with
+  // Access-Control-Allow-Origin: * — without it, hls.js in the
+  // browser cannot fetch it cross-origin, however well the server
+  // itself can load it. (Several player9 direct feeds fail on
+  // exactly this: their segments load, but no CORS header.)
   try {
     const res = await fetchWithTimeout(
       url,
-      { "User-Agent": UA },
+      { "User-Agent": UA, Origin: "https://aayushlife.live" },
       8000
     );
     if (!res.ok) return false;
+    if (res.headers.get("access-control-allow-origin") !== "*") return false;
     const text = await res.text();
     return text.startsWith("#EXTM3U");
   } catch {
@@ -279,7 +693,11 @@ export default async function handler(req, res) {
   }
   const key = req.query.ch;
   const path = CHANNELS[key];
-  if (!path) {
+  // A channel is known if it has a BINTV path, backup embeds, or a
+  // direct stream. Channels from the other sources have no BINTV
+  // path, so they skip the BINTV step below and go straight to
+  // their backups.
+  if (!path && !(BACKUPS[key] || []).length && !(DIRECT[key] || []).length) {
     return res.status(400).json({ error: "Unknown channel" });
   }
 
@@ -293,17 +711,19 @@ export default async function handler(req, res) {
   //     fastest first, without waiting for BINTV.
   //   - BINTV finishes first but failed: wait for the backups,
   //     then return the ordered list.
-  const bintvP = (async () => {
-    try {
-      const { url, expires } = await resolveBintv(path);
-      if (await manifestLoads(url)) {
-        return { kind: "hls", source: "BINTV", url, expires, ok: true };
-      }
-    } catch {
-      // BINTV down: fall through to the backups.
-    }
-    return null;
-  })();
+  const bintvP = path
+    ? (async () => {
+        try {
+          const { url, expires } = await resolveBintv(path);
+          if (await manifestLoads(url)) {
+            return { kind: "hls", source: "BINTV", url, expires, ok: true };
+          }
+        } catch {
+          // BINTV down: fall through to the backups.
+        }
+        return null;
+      })()
+    : Promise.resolve(null);
   const directP = Promise.all(
     (DIRECT[key] || []).map(async (d) => {
       const start = Date.now();
@@ -342,12 +762,21 @@ export default async function handler(req, res) {
     const directOk = direct.filter((s) => s.ok).sort((a, b) => a.ms - b.ms);
     const verified = checked.filter((s) => s.ok).sort((a, b) => a.ms - b.ms);
     const unverified = checked.filter((s) => !s.ok);
-    return [
+    const rest = [
       ...(bintv ? [bintv] : []),
       ...directOk.map(({ ms, ...s }) => s),
       ...verified.map(({ ms, ...s }) => s),
       ...unverified.map(({ ms, ...s }) => s),
     ];
+    // A direct stream whose manifest failed the server check is
+    // still worth one native try when it is the ONLY thing a
+    // channel has — the browser's network may reach it even when
+    // the server's cannot. Otherwise it stays hidden, so it never
+    // delays the working sources.
+    if (!rest.length) {
+      rest.push(...direct.filter((s) => !s.ok).map(({ ms, ...s }) => s));
+    }
+    return rest;
   };
   const first = await Promise.race([
     bintvP.then((b) => ({ kind: "bintv", bintv: b })),
