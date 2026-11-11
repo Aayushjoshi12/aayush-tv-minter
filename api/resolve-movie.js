@@ -3,12 +3,22 @@
 // Deploy as api/resolve-movie.js next to api/resolve.js (same Vercel-style
 // serverless handler, same CORS-open pattern).
 //
-// TWO SOURCES, primary + backup (per the user's instruction):
+// THREE SOURCES, in order (per the user's instruction — primary +
+// backups, all found by reverse-engineering):
 //   PRIMARY — net52.cc/pv (the user's actual NetMirror link).
 //     A Prime Video mirror app. Its catalogue comes from its own PHP
 //     backend (homepage.php / search.php / post.php / mini-modal-info),
 //     its titles use internal 27-char ids (NOT TMDB ids), and its
 //     video is real HLS (.m3u8) with multi-audio and subtitles.
+//   SECOND — LokLok mobile API (ga-mobile-api.loklok.tv/cms/app).
+//     Found 2026-11-11 by RE'ing the NetMirror Android APK (v3.0.1,
+//     com.streamhub.streamhub_app) with REA/JADX: the app's own video
+//     backend is the aoneroom H5 API, which needs a per-device token
+//     (not cracked), but the same catalogue is served by LokLok's
+//     mobile API with NO token — only three static headers. Call shape
+//     from the open-source filmhot site (phongna07/filmhot).
+//     Akamai 403-blocks data-centre IPs from this VM, so reachability
+//     must be verified live from Vercel/Azure (see ?loklok= / ?lokplay=).
 //   BACKUP — net79.cc / net27.cc / netmirrors.vip (the Astro NetMirror).
 //     Catalogue from TMDB, video via /api/embed-tmdb as direct signed
 //     .mp4 streams (360p-2160p, ~9h expiry, no DRM, CORS *).
@@ -515,6 +525,151 @@ async function astroEmbed(tmdbId, type, se, ep) {
   };
 }
 
+// ---------- LokLok mobile API (no-token movie source) ----------
+//
+// Found 2026-11-11 by reverse-engineering the NetMirror Android APK
+// (v3.0.1, package com.streamhub.streamhub_app, Flutter) with REA /
+// JADX. The app's own video backend is the aoneroom H5 API
+// (h5-api.aoneroom.com/wefeed-h5api-bff/subject/play), which needs a
+// per-device token built inside the app's compiled Dart code — not
+// cracked. BUT the same catalogue is served by LokLok's mobile API
+// (ga-mobile-api.loklok.tv/cms/app), which needs NO token at all: only
+// three static headers (lang, versioncode, clienttype). The call shape
+// is taken from the open-source filmhot site (phongna07/filmhot),
+// "a rapid movie website from the LokLok API":
+//   POST search/v1/searchWithKeyWord {searchKeyWord, size:50, sort:"", searchType:""}
+//     -> data.data.searchResults [{id, name, domainType (0=movie, 1=TV),
+//        dramaType, releaseTime, ...}]
+//   GET movieDrama/get?id=&category= (0=movie, 1=TV)
+//     -> data.data {episodeVo: [{id, definitionList: [{code, description}],
+//        subtitlingList: [{language, languageAbbr, subtitlingUrl}]}]}
+//   GET media/previewInfo?category=&contentId=&episodeId=&definition=
+//     -> data.data.mediaUrl (direct .mp4 / .m3u8)
+// Akamai (edgesuite) 403-blocks data-centre IPs from this VM, so the
+// API could NOT be verified from here — it must be verified live from
+// Vercel/Azure. If the resolver host is blocked too, these functions
+// return null and the Astro fallback still runs.
+const LOKLOK_BASE = "https://ga-mobile-api.loklok.tv/cms/app";
+const LOKLOK_HEADERS = {
+  lang: "en",
+  versioncode: "11",
+  clienttype: "ios_jike_default",
+};
+
+async function loklokFetch(path, opts = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 12000);
+  try {
+    const res = await fetch(`${LOKLOK_BASE}${path}`, {
+      headers: { ...LOKLOK_HEADERS, ...(opts.headers || {}) },
+      signal: controller.signal,
+      ...(opts.body ? { method: "POST", body: opts.body } : {}),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function loklokSearch(keyword) {
+  const j = await loklokFetch("/search/v1/searchWithKeyWord", {
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      searchKeyWord: keyword,
+      size: 50,
+      sort: "",
+      searchType: "",
+    }),
+  });
+  const list =
+    j && j.data && Array.isArray(j.data.searchResults)
+      ? j.data.searchResults
+      : [];
+  return list;
+}
+
+async function loklokPlay(title, year) {
+  // Returns a ?play=-shaped answer, or null when LokLok has nothing.
+  const results = await loklokSearch(title);
+  if (!results.length) return null;
+  const norm = (s) => String(s || "").toLowerCase().trim();
+  const yr = (r) =>
+    r.releaseTime ? String(r.releaseTime).slice(0, 4) : "";
+  let pick =
+    results.find(
+      (r) => norm(r.name) === norm(title) && (!year || yr(r) === year)
+    ) ||
+    results.find((r) => norm(r.name) === norm(title)) ||
+    results[0];
+  // If a year was given and the pick is a different year, do NOT play
+  // the wrong film (same rule as the Astro fallback).
+  if (year && yr(pick) && yr(pick) !== year) {
+    const byYear = results.find(
+      (r) => norm(r.name) === norm(title) && yr(r) === year
+    );
+    if (!byYear) return null;
+    pick = byYear;
+  }
+  const category = pick.domainType === 0 ? 0 : 1;
+  const detail = await loklokFetch(
+    `/movieDrama/get?id=${encodeURIComponent(pick.id)}&category=${category}`
+  );
+  const d = detail && detail.data;
+  const eps = d && Array.isArray(d.episodeVo) ? d.episodeVo : [];
+  if (!eps.length) return null;
+  const ep = eps[0];
+  const defs = Array.isArray(ep.definitionList) ? ep.definitionList : [];
+  if (!defs.length) return null;
+  const sorted = [...defs].sort(
+    (a, b) => (Number(b.code) || 0) - (Number(a.code) || 0)
+  );
+  const subs = (Array.isArray(ep.subtitlingList) ? ep.subtitlingList : [])
+    .filter((s) => s && s.subtitlingUrl)
+    .map((s) => ({
+      language: s.language || s.languageAbbr || "",
+      url: s.subtitlingUrl,
+      lang: s.languageAbbr || "",
+    }));
+  for (const def of sorted) {
+    const pv = await loklokFetch(
+      `/media/previewInfo?category=${category}&contentId=${encodeURIComponent(
+        pick.id
+      )}&episodeId=${encodeURIComponent(ep.id)}&definition=${encodeURIComponent(
+        def.code
+      )}`
+    );
+    const url = pv && pv.data && pv.data.mediaUrl;
+    if (url && /^https?:\/\//.test(url)) {
+      const q = Number(String(def.description || "").replace(/[^0-9]/g, "")) || Number(def.code) || 0;
+      if (/\.m3u8(\?|$)/i.test(url)) {
+        return {
+          ok: true,
+          source: "loklok",
+          kind: "hls",
+          title: pick.name,
+          year: yr(pick),
+          manifestUrl: url,
+          qualities: [{ label: def.description || String(def.code), resolution: q, manifestUrl: url }],
+          captions: subs,
+        };
+      }
+      return {
+        ok: true,
+        source: "loklok",
+        kind: "mp4",
+        title: pick.name,
+        year: yr(pick),
+        streams: [{ url, resolution: q }],
+        captions: subs,
+      };
+    }
+  }
+  return null;
+}
+
 // ---------- subtitles ----------
 
 function srtToVtt(srt) {
@@ -670,11 +825,18 @@ export default async function handler(req, res) {
       }
       const primary = await net52Play(id).catch(() => null);
       if (primary) return res.status(200).json(primary);
-      // Primary had no source (or failed): fall back to the Astro
-      // backup by title. The Astro catalogue is searched by the
-      // title the page passes, then the first match is embedded.
+      // Primary had no source (or failed): try LokLok next — the
+      // no-token mobile API found by reverse-engineering the
+      // NetMirror APK. Same catalogue as the app, direct video URLs.
       const title = String(q.title || "").trim();
       const year = String(q.year || "").trim();
+      if (title.length >= 2) {
+        const lok = await loklokPlay(title, year).catch(() => null);
+        if (lok) return res.status(200).json(lok);
+      }
+      // Then fall back to the Astro backup by title. The Astro
+      // catalogue is searched by the title the page passes, then
+      // the first match is embedded.
       if (title.length >= 2) {
         try {
           const { data } = await astroFetch(
@@ -765,6 +927,32 @@ export default async function handler(req, res) {
       const se = parseInt(q.se, 10) || 1;
       const ep = parseInt(q.ep, 10) || 1;
       return res.status(200).json(await astroEmbed(id, type, se, ep));
+    }
+    // --- LokLok (no-token) debug: search the LokLok catalogue ---
+    if (q.loklok) {
+      const query = String(q.loklok).trim();
+      if (query.length < 2) {
+        return res.status(400).json({ error: "Query too short" });
+      }
+      const items = await loklokSearch(query);
+      return res.status(200).json({ ok: true, source: "loklok", items });
+    }
+    // --- LokLok (no-token) debug: full play chain for a title ---
+    if (q.lokplay) {
+      const title = String(q.lokplay).trim();
+      const year = String(q.year || "").trim();
+      if (title.length < 2) {
+        return res.status(400).json({ error: "Title too short" });
+      }
+      const ans = await loklokPlay(title, year);
+      if (ans) return res.status(200).json(ans);
+      return res.status(200).json({
+        ok: true,
+        source: null,
+        kind: null,
+        noSource: true,
+        error: "No LokLok source found for this title.",
+      });
     }
 
     return res.status(400).json({ error: "Unknown mode" });
