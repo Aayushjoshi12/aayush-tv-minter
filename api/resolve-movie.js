@@ -284,77 +284,108 @@ async function net52Play(id) {
   // loads — the manifest is fetched from net52.cc, which answers
   // data-centre IPs fine (unlike the Astro video CDN), so this
   // check is reliable here.
+  //
+  // Try each base in turn and keep the first one whose manifest is
+  // actually playable. The two bases serve different CDNs:
+  // net52.cc serves freecdn4.top (reachable), pcmirror.cc serves
+  // nm-cdn2.top, whose hosts refuse connections (verified
+  // 2026-11-11: s15.nm-cdn2.top resolves but TCP/TLS fails, HTTP
+  // 000, while freecdn4.top answers 200). A pcmirror manifest is
+  // therefore unusable, so it is skipped and the other base tried.
   const tm = Date.now();
-  const { base, data } = await net52Get(`/playlist.php?id=${id}&tm=${tm}`);
-  const first = Array.isArray(data) ? data[0] : null;
-  const sources = (first && first.sources) || [];
-  if (!sources.length) return null;
-  // The playlist's file paths are root-relative ("/pv/hls/…"), so
-  // they resolve against the base's origin, not the full base —
-  // the base itself already ends in "/pv", and joining it directly
-  // would double it to "/pv/pv/hls/…" (a 404).
-  const origin = new URL(base).origin;
-  const abs = (file) =>
-    file.startsWith("http") ? file : `${origin}${file}`;
-  const qualities = sources
-    .map((s) => {
-      const url = abs(s.file);
-      const m = /[?&]q=(\d+)p/.exec(url);
-      return {
-        label: s.label || "",
-        resolution: m ? parseInt(m[1], 10) : 0,
-        manifestUrl: `${selfUrl()}?manifest=${encodeURIComponent(url)}`,
-      };
-    })
-    .sort((a, b) => a.resolution - b.resolution);
-  const auto =
-    qualities.find((q) => q.resolution === 0) || qualities[0];
-  // Validate the Auto manifest before trusting the answer.
-  // (A garbage id still gets a manifest, but it is a template:
-  // its audio URI has an empty host — "https:///files/<id>/a/…" —
-  // while a real manifest points at a real CDN host and carries
-  // this title's id in the audio path. So the check requires a
-  // real host AND this id in the audio URI.)
-  try {
-    const target = decodeURIComponent(
-      new URL(auto.manifestUrl).searchParams.get("manifest")
-    );
-    const host = /^https:\/\/(net52\.cc|pcmirror\.cc)\//.exec(target);
-    const referer = host ? `https://${host[1]}/pv/` : NET52_REFERER;
-    const r = await fetchWithTimeout(
-      target,
-      { "User-Agent": UA, Referer: referer },
-      10000
-    );
-    if (!r.ok) return null;
-    const text = await r.text();
-    if (!text.startsWith("#EXTM3U")) return null;
-    const hasRealAudio =
-      text.includes("/" + id + "/a/") && !text.includes("https:///");
-    if (!hasRealAudio) return null;
-  } catch {
-    return null;
+  for (const base of NET52_BASES) {
+    let data;
+    try {
+      const res = await fetchWithTimeout(
+        `${base}/playlist.php?id=${id}&tm=${tm}`,
+        { "User-Agent": UA, Referer: NET52_REFERER },
+        12000
+      );
+      if (!res.ok) continue;
+      data = await res.json();
+    } catch {
+      continue;
+    }
+    const first = Array.isArray(data) ? data[0] : null;
+    const sources = (first && first.sources) || [];
+    if (!sources.length) continue;
+    // The playlist's file paths are root-relative ("/pv/hls/…"), so
+    // they resolve against the base's origin, not the full base —
+    // the base itself already ends in "/pv", and joining it directly
+    // would double it to "/pv/pv/hls/…" (a 404).
+    const origin = new URL(base).origin;
+    const abs = (file) =>
+      file.startsWith("http") ? file : `${origin}${file}`;
+    const qualities = sources
+      .map((s) => {
+        const url = abs(s.file);
+        const m = /[?&]q=(\d+)p/.exec(url);
+        return {
+          label: s.label || "",
+          resolution: m ? parseInt(m[1], 10) : 0,
+          manifestUrl: `${selfUrl()}?manifest=${encodeURIComponent(url)}`,
+        };
+      })
+      .sort((a, b) => a.resolution - b.resolution);
+    const auto =
+      qualities.find((q) => q.resolution === 0) || qualities[0];
+    // Validate the Auto manifest before trusting the answer.
+    // (A garbage id still gets a manifest, but it is a template:
+    // its audio URI has an empty host — "https:///files/<id>/a/…" —
+    // while a real manifest points at a real CDN host and carries
+    // this title's id in the audio path. So the check requires a
+    // real host AND this id in the audio URI. It also requires the
+    // manifest's media to sit on a reachable CDN — freecdn4.top —
+    // and rejects a manifest served only from nm-cdn2.top.)
+    let valid = false;
+    try {
+      const target = decodeURIComponent(
+        new URL(auto.manifestUrl).searchParams.get("manifest")
+      );
+      const host = /^https:\/\/(net52\.cc|pcmirror\.cc)\//.exec(target);
+      const referer = host ? `https://${host[1]}/pv/` : NET52_REFERER;
+      const r = await fetchWithTimeout(
+        target,
+        { "User-Agent": UA, Referer: referer },
+        10000
+      );
+      if (!r.ok) continue;
+      const text = await r.text();
+      if (!text.startsWith("#EXTM3U")) continue;
+      const hasRealAudio =
+        text.includes("/" + id + "/a/") && !text.includes("https:///");
+      if (!hasRealAudio) continue;
+      const usesReachableCdn = text.includes("freecdn4.top");
+      const onlyUnreachableCdn =
+        text.includes("nm-cdn2.top") && !usesReachableCdn;
+      if (onlyUnreachableCdn) continue;
+      valid = true;
+    } catch {
+      continue;
+    }
+    if (!valid) continue;
+    const tracks = ((first && first.tracks) || [])
+      .filter((t) => t && t.file)
+      .map((t) => {
+        const file = t.file.startsWith("http")
+          ? t.file
+          : `https:${t.file}`;
+        return {
+          label: t.label || "",
+          lang: "",
+          url: `${selfUrl()}?sub=${encodeURIComponent(file)}`,
+        };
+      });
+    return {
+      ok: true,
+      source: "net52",
+      kind: "hls",
+      manifestUrl: auto.manifestUrl,
+      qualities,
+      tracks,
+    };
   }
-  const tracks = ((first && first.tracks) || [])
-    .filter((t) => t && t.file)
-    .map((t) => {
-      const file = t.file.startsWith("http")
-        ? t.file
-        : `https:${t.file}`;
-      return {
-        label: t.label || "",
-        lang: "",
-        url: `${selfUrl()}?sub=${encodeURIComponent(file)}`,
-      };
-    });
-  return {
-    ok: true,
-    source: "net52",
-    kind: "hls",
-    manifestUrl: auto.manifestUrl,
-    qualities,
-    tracks,
-  };
+  return null;
 }
 
 // ---------- Astro backup (net79 / net27 / netmirrors.vip) ----------
