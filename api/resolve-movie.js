@@ -514,7 +514,11 @@ export default async function handler(req, res) {
         { "User-Agent": UA, Referer: referer },
         12000
       );
-      if (!r.ok) return res.status(502).json({ error: "Manifest fetch failed" });
+      if (!r.ok) {
+        return res
+          .status(502)
+          .json({ error: "Manifest fetch failed", upstream: r.status });
+      }
       const text = await r.text();
       if (!text.startsWith("#EXTM3U")) {
         return res.status(502).json({ error: "Not a manifest" });
