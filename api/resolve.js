@@ -272,14 +272,20 @@ export default async function handler(req, res) {
     // BINTV down: fall through to the backups.
   }
 
-  // 2. Backup embeds, in order, each checked live. Collect up to
-  // two working ones — the site tries them in order, so more than
-  // two is rarely reached and each check costs a round trip.
+  // 2. Backup embeds. Verified pages (the page itself loads) come
+  // first; the rest are still returned afterwards, marked ok:false,
+  // so the site can offer them through its "Try next source" button
+  // instead of hiding them — a page that loads is not proof the
+  // stream inside it is alive, and a live check can flake.
   const backups = BACKUPS[key] || [];
   for (const b of backups) {
-    if (sources.filter((s) => s.kind === "embed").length >= 2) break;
     if (await pageLoads(b.url)) {
-      sources.push({ kind: "embed", source: b.source, url: b.url, expires: null });
+      sources.push({ kind: "embed", source: b.source, url: b.url, expires: null, ok: true });
+    }
+  }
+  for (const b of backups) {
+    if (!sources.some((s) => s.url === b.url)) {
+      sources.push({ kind: "embed", source: b.source, url: b.url, expires: null, ok: false });
     }
   }
 
