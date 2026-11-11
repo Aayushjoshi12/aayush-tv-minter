@@ -451,17 +451,33 @@ export default async function handler(req, res) {
   }
   const q = req.query;
 
-  // --- Master manifest proxy (net52): fetch with the Referer the
-  // hotlink protection requires and no Origin header, then serve
-  // the manifest back with CORS * so hls.js can load it.
+  // --- Manifest proxy: fetch with the Referer the hotlink
+  // protection requires and no Origin header, then serve the
+  // manifest back with CORS * so hls.js can load it.
+  //
+  // The whole net52 chain is Referer-locked, not just the master
+  // manifest: the variant (level) and audio manifests on
+  // freecdn4.top / nm-cdn2.top ALSO require Referer net52.cc/pv/
+  // (a browser on aayushlife.live gets 404, and the 404 carries
+  // no CORS header, so hls.js sees a bare networkError with no
+  // HTTP code — levelLoadError / audioTrackLoadError). The video
+  // and audio SEGMENTS, by contrast, load fine (200, CORS *) with
+  // the site's own Referer. So this proxy serves the master,
+  // variant and audio manifests, and rewrites their URIs: nested
+  // .m3u8 links become proxy URLs (so hls.js fetches them here,
+  // with the right Referer), while segment names are made absolute
+  // against the manifest's own CDN host (so the large segments
+  // still load straight from the CDN — only the tiny manifests,
+  // a few KB each, pass through Vercel; no video bandwidth).
   if (q.manifest) {
     try {
       const target = decodeURIComponent(q.manifest);
-      const m = /^https:\/\/(net52\.cc|pcmirror\.cc)\/pv\/hls\/[A-Za-z0-9]+\.m3u8/.exec(target);
-      if (!m) {
+      const net52 = /^https:\/\/(net52\.cc|pcmirror\.cc)\/pv\/hls\/[A-Za-z0-9]+\.m3u8/.exec(target);
+      const cdn = /^https:\/\/[a-z0-9.-]+\.(freecdn4\.top|nm-cdn2\.top)\/.+\.m3u8/.exec(target);
+      if (!net52 && !cdn) {
         return res.status(400).json({ error: "Bad manifest URL" });
       }
-      const referer = `https://${m[1]}/pv/`;
+      const referer = net52 ? `https://${net52[1]}/pv/` : "https://net52.cc/pv/";
       const r = await fetchWithTimeout(
         target,
         { "User-Agent": UA, Referer: referer },
@@ -476,10 +492,42 @@ export default async function handler(req, res) {
       // STREAM-INF lines (e.g. TYPE=2606:54c1:1:9ba::62:108 — an
       // IPv6-like value). It is not part of HLS and can trip strict
       // playlist parsers, so strip it before serving.
-      const clean = text.replace(
+      let clean = text.replace(
         /^(#EXT-X-STREAM-INF:[^\n]*),TYPE=[^,\n]+/gm,
         "$1"
       );
+      // Rewrite URIs. Nested .m3u8 links (variant + audio manifests)
+      // go through this proxy; segment names are made absolute
+      // against the manifest's own host so they load from the CDN.
+      const self = selfUrl();
+      const base = new URL(target);
+      const toProxy = (u) =>
+        `${self}?manifest=${encodeURIComponent(u)}`;
+      const isCdnM3u8 = (u) =>
+        /^https:\/\/[a-z0-9.-]+\.(freecdn4\.top|nm-cdn2\.top)\/.+\.m3u8/.test(u);
+      clean = clean
+        .split("\n")
+        .map((line) => {
+          const t = line.trim();
+          if (!t) return line;
+          // URI="..." attributes (EXT-X-MEDIA audio links, EXT-X-KEY).
+          if (t.startsWith("#") && t.includes('URI="')) {
+            return line.replace(
+              /URI="(https:[^"]+\.m3u8[^"]*)"/g,
+              (m, u) => (isCdnM3u8(u) ? `URI="${toProxy(u)}"` : m)
+            );
+          }
+          if (t.startsWith("#")) return line;
+          // Bare URI line: a variant manifest or a segment.
+          if (/\.m3u8(\?|$)/.test(t)) {
+            const abs = new URL(t, base).href;
+            return isCdnM3u8(abs) ? toProxy(abs) : abs;
+          }
+          // A segment: make relative names absolute on the CDN host.
+          if (!/^https?:\/\//.test(t)) return new URL(t, base).href;
+          return line;
+        })
+        .join("\n");
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
       return res.status(200).send(clean);
     } catch {
