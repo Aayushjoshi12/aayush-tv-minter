@@ -128,7 +128,7 @@ function fetchWithTimeout(url, headers, timeoutMs) {
   );
 }
 
-let SELF_URL = "https://aayush-tv-movies.azurewebsites.net/api/resolve-movie";
+let SELF_URL = "https://aayush-tv-movies-geesc6d8g6fchvfk.koreacentral-01.azurewebsites.net/api/resolve-movie";
 const selfUrl = () => SELF_URL;
 
 // ---------- net52 (primary) ----------
