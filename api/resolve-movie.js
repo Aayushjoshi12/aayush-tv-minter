@@ -137,6 +137,8 @@ async function net52Get(path) {
   // Try each net52 base in order until one answers with 200 JSON.
   // One retry per base: net52 occasionally drops a request when
   // several arrive at once (transient 502s seen 2026-11-11).
+  // Returns {base, data} so callers can resolve relative URLs
+  // against the base that actually answered.
   let lastError = null;
   for (const base of NET52_BASES) {
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -150,7 +152,7 @@ async function net52Get(path) {
           lastError = new Error(`${base} ${res.status}`);
           break;
         }
-        return await res.json();
+        return { base, data: await res.json() };
       } catch (e) {
         lastError = e;
         if (attempt === 0) {
@@ -165,7 +167,7 @@ async function net52Get(path) {
 const net52Poster = (id) => `${NET52_IMG}${id}.jpg`;
 
 async function net52Home(kind) {
-  const data = await net52Get(
+  const { data } = await net52Get(
     `/homepage.php?p=${kind === "show" ? "show" : "movie"}&t=${Date.now()}`
   );
   const featured = await Promise.all(
@@ -174,7 +176,7 @@ async function net52Home(kind) {
       // so resolve the title the same way the app does for a card.
       let title = "";
       try {
-        const info = await net52Get(
+        const { data: info } = await net52Get(
           `/mini-modal-info.php?id=${s.id}&t=${Date.now()}`
         );
         title = info.title || "";
@@ -203,7 +205,7 @@ async function net52Home(kind) {
 }
 
 async function net52Search(query) {
-  const data = await net52Get(
+  const { data } = await net52Get(
     `/search.php?s=${encodeURIComponent(query)}&t=${Date.now()}`
   );
   const items = (data.searchResult || []).map((r) => ({
@@ -221,7 +223,7 @@ async function net52Info(ids) {
   const items = await Promise.all(
     list.map(async (id) => {
       try {
-        const d = await net52Get(
+        const { data: d } = await net52Get(
           `/mini-modal-info.php?id=${id}&t=${Date.now()}`
         );
         return {
@@ -240,7 +242,7 @@ async function net52Info(ids) {
 }
 
 async function net52Detail(id) {
-  const d = await net52Get(`/post.php?id=${id}&t=${Date.now()}`);
+  const { data: d } = await net52Get(`/post.php?id=${id}&t=${Date.now()}`);
   return {
     ok: true,
     source: "net52",
@@ -283,12 +285,17 @@ async function net52Play(id) {
   // data-centre IPs fine (unlike the Astro video CDN), so this
   // check is reliable here.
   const tm = Date.now();
-  const data = await net52Get(`/playlist.php?id=${id}&tm=${tm}`);
+  const { base, data } = await net52Get(`/playlist.php?id=${id}&tm=${tm}`);
   const first = Array.isArray(data) ? data[0] : null;
   const sources = (first && first.sources) || [];
   if (!sources.length) return null;
+  // The playlist's file paths are root-relative ("/pv/hls/…"), so
+  // they resolve against the base's origin, not the full base —
+  // the base itself already ends in "/pv", and joining it directly
+  // would double it to "/pv/pv/hls/…" (a 404).
+  const origin = new URL(base).origin;
   const abs = (file) =>
-    file.startsWith("http") ? file : `https://net52.cc${file}`;
+    file.startsWith("http") ? file : `${origin}${file}`;
   const qualities = sources
     .map((s) => {
       const url = abs(s.file);
@@ -312,18 +319,19 @@ async function net52Play(id) {
     const target = decodeURIComponent(
       new URL(auto.manifestUrl).searchParams.get("manifest")
     );
+    const host = /^https:\/\/(net52\.cc|pcmirror\.cc)\//.exec(target);
+    const referer = host ? `https://${host[1]}/pv/` : NET52_REFERER;
     const r = await fetchWithTimeout(
       target,
-      { "User-Agent": UA, Referer: NET52_REFERER },
+      { "User-Agent": UA, Referer: referer },
       10000
     );
     if (!r.ok) return null;
     const text = await r.text();
     if (!text.startsWith("#EXTM3U")) return null;
-    const realAudio = new RegExp(
-      "https://[\\w.-]+/\\S*" + id + "/a/"
-    );
-    if (!realAudio.test(text)) return null;
+    const hasRealAudio =
+      text.includes("/" + id + "/a/") && !text.includes("https:///");
+    if (!hasRealAudio) return null;
   } catch {
     return null;
   }
@@ -449,12 +457,14 @@ export default async function handler(req, res) {
   if (q.manifest) {
     try {
       const target = decodeURIComponent(q.manifest);
-      if (!/^https:\/\/net52\.cc\/pv\/hls\/[A-Za-z0-9]+\.m3u8/.test(target)) {
+      const m = /^https:\/\/(net52\.cc|pcmirror\.cc)\/pv\/hls\/[A-Za-z0-9]+\.m3u8/.exec(target);
+      if (!m) {
         return res.status(400).json({ error: "Bad manifest URL" });
       }
+      const referer = `https://${m[1]}/pv/`;
       const r = await fetchWithTimeout(
         target,
-        { "User-Agent": UA, Referer: NET52_REFERER },
+        { "User-Agent": UA, Referer: referer },
         12000
       );
       if (!r.ok) return res.status(502).json({ error: "Manifest fetch failed" });
