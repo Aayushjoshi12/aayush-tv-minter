@@ -472,8 +472,16 @@ export default async function handler(req, res) {
       if (!text.startsWith("#EXTM3U")) {
         return res.status(502).json({ error: "Not a manifest" });
       }
+      // Sanitize: the CDN injects a non-standard TYPE attribute into
+      // STREAM-INF lines (e.g. TYPE=2606:54c1:1:9ba::62:108 — an
+      // IPv6-like value). It is not part of HLS and can trip strict
+      // playlist parsers, so strip it before serving.
+      const clean = text.replace(
+        /^(#EXT-X-STREAM-INF:[^\n]*),TYPE=[^,\n]+/gm,
+        "$1"
+      );
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-      return res.status(200).send(text);
+      return res.status(200).send(clean);
     } catch {
       return res.status(502).json({ error: "Manifest fetch failed" });
     }
