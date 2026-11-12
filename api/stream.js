@@ -24,7 +24,12 @@ export default async function handler(req, res) {
   if (!id || !/^\d+$/.test(id)) {
     return res.status(400).json({ error: "Invalid id" });
   }
-  const target = `http://tv.techjail.net/huritv9/getlink.php?vv=1&CHID=${id}`;
+  // FIX 2026-11-12: huritv9/getlink.php is gone (http 301 -> https 404
+  // "File not found"), so the minter returned "Upstream failed" for
+  // every channel. huritv8/getlink.php still returns a live signed
+  // .m3u8, so use that. (Techjail's own homepage is empty; the
+  // service appears to have moved/renamed the endpoint.)
+  const target = `https://tv.techjail.net/huritv8/getlink.php?vv=1&CHID=${id}`;
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 20000);
