@@ -136,26 +136,37 @@
 // Returned URLs are time-limited and only ever sent to the user's own
 // browser.
 
-// The catalogue is split into ~550KB chunks (api/modlist-index-N.js)
-// because a single 5MB file exceeds the push tool's request size.
-// The resolver imports the chunks DIRECTLY (not via a loader) so
-// Vercel's bundler traces them from this entry file.
-const { MODLIST_INDEX_1 } = require("./modlist-index-1.js");
-const { MODLIST_INDEX_2 } = require("./modlist-index-2.js");
-const { MODLIST_INDEX_3 } = require("./modlist-index-3.js");
-const { MODLIST_INDEX_4 } = require("./modlist-index-4.js");
-const { MODLIST_INDEX_5 } = require("./modlist-index-5.js");
-const { MODLIST_INDEX_6 } = require("./modlist-index-6.js");
-const { MODLIST_INDEX_7 } = require("./modlist-index-7.js");
-const MODLIST_INDEX = [
-  ...MODLIST_INDEX_1,
-  ...MODLIST_INDEX_2,
-  ...MODLIST_INDEX_3,
-  ...MODLIST_INDEX_4,
-  ...MODLIST_INDEX_5,
-  ...MODLIST_INDEX_6,
-  ...MODLIST_INDEX_7,
-];
+// The catalogue is NOT bundled into the function: a 5MB static
+// import crashed the Vercel function (FUNCTION_INVOCATION_FAILED
+// on every endpoint — the bundler could not handle it). Instead
+// the index lives as a static file (public/modlist-index.json,
+// ~3.9MB) and is fetched once at runtime and cached in memory.
+// The chunks (api/modlist-index-N.js) are the build artifacts;
+// the loader (api/modlist-index.js) is unused by the resolver.
+let MODLIST_INDEX_CACHE = null;
+let MODLIST_INDEX_PROMISE = null;
+const MODLIST_INDEX_URL =
+  "https://aayush-tv-minter.vercel.app/modlist-index.json";
+async function loadMoviesModIndex() {
+  if (MODLIST_INDEX_CACHE) return MODLIST_INDEX_CACHE;
+  if (!MODLIST_INDEX_PROMISE) {
+    MODLIST_INDEX_PROMISE = (async () => {
+      const r = await fetchWithTimeout(
+        MODLIST_INDEX_URL,
+        { "User-Agent": UA },
+        30000
+      );
+      if (!r.ok) throw new Error("index HTTP " + r.status);
+      const data = await r.json();
+      MODLIST_INDEX_CACHE = Array.isArray(data) ? data : [];
+      return MODLIST_INDEX_CACHE;
+    })().catch((e) => {
+      MODLIST_INDEX_PROMISE = null;
+      throw e;
+    });
+  }
+  return MODLIST_INDEX_PROMISE;
+}
 
 const NET52_BASES = [
   "https://net52.cc/pv",
@@ -795,13 +806,6 @@ const MOVIESMOD_BASE = "https://moviesmod.tw";
 const MODPRO_BASE = "https://links.modpro.blog";
 const NAUKRI_BASE = "https://en.thenaukriadda.in";
 
-function loadMoviesModIndex() {
-  // Static import (api/modlist-index.js) so the bundler includes
-  // the 31,160 entries with the function — no filesystem reads,
-  // which Vercel's bundler cannot trace reliably.
-  return MODLIST_INDEX;
-}
-
 const normWords = (s) =>
   String(s || "")
     .toLowerCase()
@@ -809,10 +813,10 @@ const normWords = (s) =>
     .split(" ")
     .filter(Boolean);
 
-function findModlistEntry(title, year, siteCode) {
+async function findModlistEntry(title, year, siteCode) {
   // Best-matching index entry for a title (+ optional year and
   // site). Returns {s, site, p} or null.
-  const entries = loadMoviesModIndex();
+  const entries = await loadMoviesModIndex();
   const words = normWords(title);
   if (!words.length || !entries.length) return null;
   let best = null;
@@ -837,9 +841,9 @@ function findModlistEntry(title, year, siteCode) {
   return best ? best.entry : null;
 }
 
-function findMoviesModSlug(title, year) {
+async function findMoviesModSlug(title, year) {
   // Backwards-compat wrapper: the slug of the best match (any site).
-  const e = findModlistEntry(title, year, "");
+  const e = await findModlistEntry(title, year, "");
   return e ? e.s : null;
 }
 
@@ -916,7 +920,7 @@ function slugToMovie(slug) {
   return { title, year };
 }
 
-function moviesModSearch(query) {
+async function moviesModSearch(query) {
   // Searches the WHOLE modlist network index (moviesmod +
   // moviesleech + uhdmovies + animeflix), not just MoviesMod.
   const words = normWords(query);
@@ -924,7 +928,8 @@ function moviesModSearch(query) {
   const qNorm = words.join(" ");
   const results = [];
   const seen = new Set();
-  for (const e of MODLIST_INDEX) {
+  const index = await loadMoviesModIndex();
+  for (const e of index) {
     const s = String(e.s).toLowerCase();
     if (!words.every((w) => s.includes(w))) continue;
     const { title, year } = slugToMovie(e.s);
@@ -1068,7 +1073,7 @@ async function moviesModArchives(title, year, siteCode, slug) {
   if (siteCode && slug && site) {
     pageUrl = `${site.base}/download-${slug}/`;
   } else {
-    const entry = findModlistEntry(title, year, siteCode || "");
+    const entry = await findModlistEntry(title, year, siteCode || "");
     if (entry) {
       const s = MODLIST_SITES[entry.site] || MODLIST_SITES.mm;
       pageUrl = `${s.base}/download-${entry.s}/`;
@@ -1619,7 +1624,7 @@ async function handleMovie(req, res) {
       return res.status(200).json({
         ok: true,
         source: "moviesmod",
-        items: moviesModSearch(query),
+        items: await moviesModSearch(query),
       });
     }
 

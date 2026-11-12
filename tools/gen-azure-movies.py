@@ -99,14 +99,9 @@ def main():
     assert lines[2].startswith("// Deploy as api/resolve-movie.js"), lines[2]
     out = AZURE_HEADER + "\n".join(lines[2:])
 
-    # 2. ESM imports of the index chunks -> require(). The resolver
-    #    imports the chunks directly (no loader) so Vercel's bundler
-    #    traces them from the entry file.
-    out = re.sub(
-        r'import \{ (MODLIST_INDEX_\d+) \} from "\./(modlist-index-\d+\.js)";',
-        r'const { \1 } = require("./\2");',
-        out,
-    )
+    # 2. No index import to convert: the resolver fetches
+    #    public/modlist-index.json at runtime (a 5MB static import
+    #    crashed the Vercel function), so there is nothing to bundle.
     assert re.search(r"^import ", out, re.M) is None, "an import survived"
 
     # 3. selfUrl swap.
@@ -114,7 +109,7 @@ def main():
         'const selfUrl = () =>\n  "https://aayush-tv-minter.vercel.app/api/resolve-movie";',
         f'let SELF_URL = "{AZURE_URL}";\nconst selfUrl = () => SELF_URL;',
     )
-    assert "aayush-tv-minter.vercel.app" not in out
+    assert "aayush-tv-minter.vercel.app/api/resolve-movie" not in out
 
     # 4. Handler rename.
     out = out.replace(
@@ -129,37 +124,6 @@ def main():
     DST.write_text(out)
     print(f"wrote {DST} ({len(out)} bytes)")
 
-    # 6. Copy the modlist index module next to the Azure function
-    #    (so the relative require() resolves). The index is split
-    #    into chunks; the loader and every chunk are ESM, so each is
-    #    converted to CommonJS on the way (import -> require(),
-    #    export -> module.exports).
-    def to_cjs(text):
-        text = re.sub(
-            r'import \{ (MODLIST_INDEX_\d+) \} from "\./(modlist-index-\d+\.js)";',
-            r'const { \1 } = require("./\2");',
-            text,
-        )
-        text = re.sub(
-            r'export const (MODLIST_INDEX(?:_\d+)?) =',
-            r'const \1 =',
-            text,
-        )
-        if "module.exports" not in text:
-            m = re.search(r"const (MODLIST_INDEX(?:_\d+)?) =", text)
-            if m:
-                text = text.rstrip("\n") + f"\nmodule.exports = {{ {m.group(1)} }};\n"
-        return text
-
-    if INDEX_SRC.exists():
-        INDEX_DST.write_text(to_cjs(INDEX_SRC.read_text()))
-        print(f"copied {INDEX_SRC.name} -> azure-movies/src/functions/ (as CommonJS)")
-    else:
-        print("WARNING: api/modlist-index.js not found, skipping")
-    for chunk in INDEX_CHUNKS:
-        dst = ROOT / "azure-movies" / "src" / "functions" / chunk.name
-        dst.write_text(to_cjs(chunk.read_text()))
-        print(f"copied {chunk.name} -> azure-movies/src/functions/ ({chunk.stat().st_size} bytes)")
 
 
 if __name__ == "__main__":
