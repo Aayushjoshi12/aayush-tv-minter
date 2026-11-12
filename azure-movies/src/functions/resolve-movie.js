@@ -886,6 +886,60 @@ const SMALL_WORDS = new Set([
   "of", "the", "a", "an", "and", "in", "on", "at", "to", "for", "with",
 ]);
 
+// Resolve an IMDb code (tt1160419) to a title via the free
+// Cinemeta API (no key; Stremio's metadata source). Tries the
+// movie endpoint and the series endpoint in parallel and returns
+// {name, year, type} or null. This is what lets a user paste an
+// IMDb code into the search box and get the title.
+async function imdbLookup(imdbId) {
+  const id = String(imdbId || "").trim();
+  if (!/^tt\d{7,8}$/.test(id)) return null;
+  const urls = [
+    `https://v3-cinemeta.strem.io/meta/movie/${id}.json`,
+    `https://v3-cinemeta.strem.io/meta/series/${id}.json`,
+  ];
+  const results = await Promise.all(
+    urls.map(async (u) => {
+      try {
+        const r = await fetchWithTimeout(u, {}, 8000);
+        if (!r.ok) return null;
+        const j = await r.json();
+        return j && j.meta ? j.meta : null;
+      } catch {
+        return null;
+      }
+    })
+  );
+  // A wrong-type lookup returns either an empty body or a stale
+  // fallback entry (e.g. the movie endpoint answers a series id
+  // with a "Mirror" record that has no year). Only accept a
+  // result with a real name AND a year.
+  const meta = results.find(
+    (m) => m && m.name && m.year && String(m.year).trim()
+  );
+  if (!meta) return null;
+  // Series years come as a range ("2008–2013"); keep the first
+  // year for matching the index.
+  const yearM = /(\d{4})/.exec(String(meta.year));
+  return {
+    name: meta.name,
+    year: yearM ? yearM[1] : "",
+    type: meta.type || "",
+  };
+}
+// A slug is a series when it names a season ("season-2",
+// "s01") — or when it carries NO year at all. Movies almost
+// always carry a year ("avengers-endgame-2019-..."); series
+// pages like "stranger-things-hindi-480p-720p-1080p" do not.
+// This is a badge hint only — the download path re-checks by
+// looking at the page itself (?series= first, then ?dlall=).
+function slugLooksSeries(slug) {
+  const s = String(slug || "").toLowerCase();
+  if (/season/.test(s) || /\bs\d{1,2}\b/.test(s)) return true;
+  if (/\b(19|20)\d{2}\b/.test(s)) return false;
+  return true;
+}
+
 function slugToMovie(slug) {
   const parts = String(slug).split("-").filter(Boolean);
   let yearIdx = -1;
@@ -972,6 +1026,7 @@ async function moviesModSearch(query) {
       title,
       year,
       season: season || "",
+      series: slugLooksSeries(e.s),
       slug: e.s,
       site: e.site,
       siteName: site.name,
@@ -1135,13 +1190,15 @@ async function moviesModArchives(title, year, siteCode, slug) {
   const archives = [];
   // (a) Blog archive links: any *.blog/archives/<id> (modpro,
   // leechpro, ...). Each is one quality; fetch it for its sids.
+  // Skip episodes.*.blog links — those are series downloads, not
+  // movie qualities (a series page must go through ?series=).
   const blogLinks = [
     ...new Set(
       [...pageHtml.matchAll(
         /https?:\/\/([a-z0-9.-]+\.blog)\/archives\/(\d+)/g
       )].map((m) => `${m[1]}|${m[2]}`)
     ),
-  ];
+  ].filter((link) => !link.startsWith("episodes."));
   for (const link of blogLinks) {
     const [blogBase, archiveId] = link.split("|");
     try {
@@ -1359,19 +1416,29 @@ async function moviesModAllQualities(title, year, siteCode, slug) {
 // archive id); tapping one calls ?ep= to resolve just that file.
 
 // Episode number from an archive title: "#1", "E01", "S01E01",
-// "Episode 1" — the first such marker wins. Returns null when
-// the title only names a season (e.g. "From S02 720p").
+// "Episode 1" — the first such marker wins. "Vol 1" is a VOLUME
+// (a batch of episodes, e.g. Stranger Things S05 Vol 1), NOT an
+// episode — never match the number after "Vol".
 function seriesEpisode(title) {
   const t = String(title || "");
   let m = /S\d{1,2}E(\d{1,3})/i.exec(t);
   if (m) return parseInt(m[1], 10);
-  m = /(?:^|[#\s])(\d{1,3})\s*(?:$|[\s\-–])/ .exec(t);
+  m = /Episode\s*(\d{1,3})/i.exec(t);
   if (m) return parseInt(m[1], 10);
   m = /E(\d{1,3})\b/i.exec(t);
   if (m) return parseInt(m[1], 10);
-  m = /Episode\s*(\d{1,3})/i.exec(t);
+  // A bare "#N" or leading number — but not after "Vol".
+  m = /(?:^|[#\s])(\d{1,3})\s*(?:$|[\s\-–])/ .exec(t.replace(/Vol\s*\d{1,3}/gi, ""));
   if (m) return parseInt(m[1], 10);
   return null;
+}
+
+// Volume number from an archive title: "Stranger Things S05
+// Vol 1" -> 1, "S05 Vol2" -> 2. Volumes are the pickable unit
+// when a season is split into parts instead of episodes.
+function seriesVolume(title) {
+  const m = /\bVol\.?\s*(\d{1,3})/i.exec(String(title || ""));
+  return m ? parseInt(m[1], 10) : null;
 }
 
 // Season number from an archive title: "From S02 720p" -> 2,
@@ -1396,6 +1463,7 @@ function parseSeriesArchive(title) {
   return {
     season: seriesSeason(t),
     ep: seriesEpisode(t),
+    vol: seriesVolume(t),
     quality: q ? `${q[1]}p` : "",
     isPack: /\[?\s*ZIP\s*\/\s*PACK\s*\]?/i.test(t) || /\bPACK\b/i.test(t),
   };
@@ -1479,10 +1547,14 @@ async function seriesInfo(title, year, siteCode, slug) {
   const blogLinks = [
     ...new Set(
       [...pageHtml.matchAll(
-        /https?:\/\/([a-z0-9.-]+\.blog)\/archives\/(\d+)/g
+        /https?:\/\/(episodes\.[a-z0-9.-]+\.blog)\/archives\/(\d+)/g
       )].map((m) => `${m[1]}|${m[2]}`)
     ),
   ];
+  // A series page lists its downloads on an episodes.*.blog host;
+  // a movie page uses links.*.blog instead. No episode links means
+  // this is not a series page — fail fast so the caller can try
+  // the movie path instead of waiting on every archive.
   if (!blogLinks.length) return null;
   // Read every archive's title + sids in parallel.
   const fetched = (
@@ -1549,10 +1621,12 @@ async function seriesInfo(title, year, siteCode, slug) {
 }
 
 // One season's episodes, resolved: for the requested season,
-// reads each archive's title (to confirm the season) and resolves
-// it to a file, then reads the EPISODE number from the file name
-// ("From.S02E05...") — that is what lets the user download S2E5
-// specifically. Returns {pageUrl, episodes: [{ep, qualities: [
+// resolves each archive to its file and groups the files into
+// pickable units. The unit is the EPISODE when the file name
+// carries one ("From.S02E05..."), the VOLUME when the archive
+// title names one ("Stranger Things S05 Vol 2"), or the episode
+// marker in the title ("#1 ..."). Returns {pageUrl, episodes:
+// [{label: "Ep 5" | "Vol 2", kind: "ep"|"vol", qualities: [
 // {quality, downloadUrl, filename, size}]}]}.
 async function seasonEpisodes(title, year, siteCode, slug, seasonNum) {
   const pageUrl = await findSeriesPage(title, year, siteCode, slug);
@@ -1568,10 +1642,12 @@ async function seasonEpisodes(title, year, siteCode, slug, seasonNum) {
   const blogLinks = [
     ...new Set(
       [...pageHtml.matchAll(
-        /https?:\/\/([a-z0-9.-]+\.blog)\/archives\/(\d+)/g
+        /https?:\/\/(episodes\.[a-z0-9.-]+\.blog)\/archives\/(\d+)/g
       )].map((m) => `${m[1]}|${m[2]}`)
     ),
   ];
+  // Same series-only rule as seriesInfo: a movie page uses
+  // links.*.blog, not episodes.*.blog.
   if (!blogLinks.length) return null;
   // Read every archive's title + sids in parallel, keep only this
   // season's non-pack archives.
@@ -1593,9 +1669,10 @@ async function seasonEpisodes(title, year, siteCode, slug, seasonNum) {
     return info.season === seasonNum || (info.season == null && seasonNum === 0);
   });
   if (!mine.length) return null;
-  // Resolve each archive to its file (parallel) and read the
-  // episode from the file name.
-  const files = (
+  // Resolve each archive to its file (parallel), keeping the file
+  // tied to its own archive's title so the unit is never guessed
+  // from a different archive.
+  const resolved = (
     await Promise.all(
       mine.map(async (f) => {
         const info = parseSeriesArchive(f.title);
@@ -1603,33 +1680,58 @@ async function seasonEpisodes(title, year, siteCode, slug, seasonNum) {
           { archiveId: f.archiveId, blogBase: f.blogBase, quality: info.quality, sids: f.sids },
           pageUrl
         ).catch(() => null);
-        return file;
+        if (!file) return null;
+        return { file, info };
       })
     )
   ).filter(Boolean);
-  const epMap = new Map(); // ep -> [file]
-  for (const file of files) {
+  if (!resolved.length) return null;
+  const unitMap = new Map(); // key -> {label, kind, files}
+  for (const { file, info } of resolved) {
+    // 1) Episode from the FILE name is the most reliable
+    //    ("From.S02E05...").
     const se = fileSeasonEpisode(file.filename);
-    const ep = se ? se.ep : null;
-    // Fall back to the archive title's episode marker.
-    const epNum = ep != null ? ep : null;
-    if (epNum == null) continue;
-    if (!epMap.has(epNum)) epMap.set(epNum, []);
-    epMap.get(epNum).push(file);
+    if (se) {
+      const key = `ep${se.ep}`;
+      if (!unitMap.has(key)) unitMap.set(key, { label: `Ep ${se.ep}`, kind: "ep", files: [] });
+      unitMap.get(key).files.push(file);
+      continue;
+    }
+    // 2) Episode marker in the archive title ("#1 ...").
+    if (info.ep != null) {
+      const key = `ep${info.ep}`;
+      if (!unitMap.has(key)) unitMap.set(key, { label: `Ep ${info.ep}`, kind: "ep", files: [] });
+      unitMap.get(key).files.push(file);
+      continue;
+    }
+    // 3) Volume in the archive title ("S05 Vol 2").
+    if (info.vol != null) {
+      const key = `vol${info.vol}`;
+      if (!unitMap.has(key)) unitMap.set(key, { label: `Vol ${info.vol}`, kind: "vol", files: [] });
+      unitMap.get(key).files.push(file);
+      continue;
+    }
+    // 4) No episode or volume anywhere — a single file for the
+    //    whole season in one quality; skip it here (the season
+    //    zip in ?series= already covers it).
   }
-  const episodes = [...epMap.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([ep, quals]) => {
+  const episodes = [...unitMap.entries()]
+    .sort((a, b) => {
+      const na = parseInt(a[0].replace(/^(ep|vol)/, ""), 10) || 0;
+      const nb = parseInt(b[0].replace(/^(ep|vol)/, ""), 10) || 0;
+      return na - nb;
+    })
+    .map(([, unit]) => {
       const seen = new Set();
       const uniq = [];
-      for (const q of quals.sort(
+      for (const q of unit.files.sort(
         (a, b) => (parseInt(b.quality, 10) || 0) - (parseInt(a.quality, 10) || 0)
       )) {
         if (q.quality && seen.has(q.quality)) continue;
         if (q.quality) seen.add(q.quality);
         uniq.push(q);
       }
-      return { ep, qualities: uniq };
+      return { label: unit.label, kind: unit.kind, qualities: uniq };
     });
   return { pageUrl, episodes };
 }
@@ -1946,6 +2048,37 @@ async function handleMovie(req, res) {
       const query = String(q.dq).trim();
       if (query.length < 2) {
         return res.status(400).json({ error: "Query too short" });
+      }
+      // IMDb code: "tt1160419" (or bare digits "1160419") — resolve
+      // it to a title first, then search the index by that title.
+      // The response carries resolvedTitle so the page can show
+      // what the code meant.
+      const imdbM = /^(?:tt)?(\d{7,8})$/.exec(query);
+      if (imdbM) {
+        const meta = await imdbLookup(`tt${imdbM[1]}`).catch(() => null);
+        if (!meta) {
+          return res.status(200).json({
+            ok: true,
+            source: "moviesmod",
+            items: [],
+            imdb: query,
+            error: "That IMDb code did not resolve to a title.",
+          });
+        }
+        const items = await moviesModSearch(meta.name);
+        // Prefer the exact year when the index has several films
+        // with the same name (e.g. Dune 1984 vs Dune 2021).
+        const exact = meta.year
+          ? items.filter((i) => i.year === meta.year)
+          : [];
+        return res.status(200).json({
+          ok: true,
+          source: "moviesmod",
+          items: exact.length ? exact : items,
+          resolvedTitle: meta.name,
+          resolvedYear: meta.year,
+          resolvedType: meta.type,
+        });
       }
       return res.status(200).json({
         ok: true,
