@@ -110,12 +110,22 @@
 //   ?sub=<urlencoded absolute .srt URL>
 //                            -> 200 the subtitle converted SRT -> VTT
 //                              (text/vtt, CORS *), so <track> can load it.
+//   MOVIESMOD DOWNLOAD (one-click download link):
+//   ?dl=<title>&year=<year>&quality=<480p|720p|1080p>
+//                            -> 200 {"ok": true, "source": "moviesmod",
+//                               "downloadUrl": "<DriveSeed file page>",
+//                               "quality": "720p", "filename": "...mkv",
+//                               "pageUrl": "<moviesmod page>"}
+//                               or {"ok": true, "noSource": true}.
 //   -> 400 on a missing/unknown mode. 502 when every upstream fails.
 //
 // SAFETY: only fetches public, unauthenticated catalogue, detail,
 // playlist and manifest endpoints. No secrets, no shell, no storage.
 // Returned URLs are time-limited and only ever sent to the user's own
 // browser.
+
+const fs = require("node:fs");
+const path = require("node:path");
 
 const NET52_BASES = [
   "https://net52.cc/pv",
@@ -692,6 +702,341 @@ async function loklokPlay(title, year) {
   return null;
 }
 
+// ---------- MoviesMod download (one-click download link) ----------
+//
+// Reverse-engineered 2026-11-12. MoviesMod (moviesmod.tw) is a
+// WordPress download site (Hollywood/Bollywood, 480p/720p/1080p).
+// The download chain, traced hop by hop:
+//   1. Movie page https://moviesmod.tw/download-<slug>/ has one
+//      links.modpro.blog/archives/<id> button per quality.
+//   2. The modpro page ("wait 5 seconds") lists the download servers
+//      as https://en.thenaukriadda.in/?sid=<base64> links.
+//   3. The sid page is a tiny auto-submitting POST form (_lp_http)
+//      to https://en.thenaukriadda.in/.
+//   4. That returns an "I'm Not a Robot" timer page (10s countdown,
+//      NOT a real CAPTCHA) whose hidden form (lp-s1-form) POSTs
+//      _lp_http2/_lp_token/_lp_chain/_lp_hop_index to a blog article.
+//   5. The article page has a "Generate link" button (6s timer) and
+//      a "Click here to continue" button; the page JS holds a cookie
+//      (lp-<hash> = the _lp_http2 token) and a Go link /?lp_go=lp-<hash>.
+//   6. GET the Go link with that cookie -> a "Please wait" page whose
+//      JS window.location.replace() is the final file page
+//      (driveseed.org/file/<id>) or moviesmod.wiki/report-broken-links
+//      when the file is dead.
+//   7. The file page is DriveSeed (title = filename, size shown);
+//      the actual file download there is behind a Cloudflare
+//      Turnstile check in the visitor's browser, so the resolver
+//      returns the file PAGE URL — one tap from the site, one click
+//      on the page, instead of the ~6-step chain with waits.
+// The timers are client-side only: the server skips them by reading
+// the form fields straight out of the HTML/JS. The whole chain is
+// ~5 HTTP requests and takes a few seconds. Verified end-to-end
+// 2026-11-12: Avengers: Age of Ultron (2015) 720p -> DriveSeed file
+// "Avengers.Age.of.Ultron.2015.720p.Hindi.English.Moviesmod.in.mkv",
+// 1.1GB. (The first server for that title was dead —
+// report-broken-links — so the resolver tries each server in turn.)
+//
+// Finding the movie page: the site's own search is Cloudflare-
+// challenged for data-centre IPs and the WP REST API needs a login,
+// so the resolver looks the title up in a pre-built index of the
+// site's sitemap (data-moviesmod-index.json, 21,704 slugs, built
+// 2026-11-12 from the 22 post sitemaps). Slug-guessing is the
+// fallback when the index misses. The index goes stale as new
+// movies are added; rebuild it from the sitemaps when lookups
+// start missing.
+const MOVIESMOD_BASE = "https://moviesmod.tw";
+const MODPRO_BASE = "https://links.modpro.blog";
+const NAUKRI_BASE = "https://en.thenaukriadda.in";
+
+let MOVIESMOD_SLUGS = null;
+function loadMoviesModIndex() {
+  if (MOVIESMOD_SLUGS) return MOVIESMOD_SLUGS;
+  const candidates = [];
+  try {
+    const here = __dirname;
+    candidates.push(path.join(here, "..", "data-moviesmod-index.json"));
+    candidates.push(path.join(here, "..", "..", "data-moviesmod-index.json"));
+  } catch {
+    // import.meta unavailable (CommonJS build): fall through to cwd.
+  }
+  candidates.push(path.join(process.cwd(), "data-moviesmod-index.json"));
+  for (const p of candidates) {
+    try {
+      const raw = fs.readFileSync(p, "utf8");
+      MOVIESMOD_SLUGS = JSON.parse(raw);
+      return MOVIESMOD_SLUGS;
+    } catch {
+      // Try the next candidate path.
+    }
+  }
+  MOVIESMOD_SLUGS = [];
+  return MOVIESMOD_SLUGS;
+}
+
+const normWords = (s) =>
+  String(s || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(" ")
+    .filter(Boolean);
+
+function findMoviesModSlug(title, year) {
+  const slugs = loadMoviesModIndex();
+  const words = normWords(title);
+  if (!words.length || !slugs.length) return null;
+  let best = null;
+  for (const slug of slugs) {
+    const s = String(slug).toLowerCase();
+    if (year && !s.includes(String(year))) continue;
+    if (!words.every((w) => s.includes(w))) continue;
+    // Score: words in order first, then a tighter (shorter) slug.
+    let idx = -1;
+    let inOrder = 0;
+    for (const w of words) {
+      const i = s.indexOf(w, idx + 1);
+      if (i > idx) {
+        inOrder++;
+        idx = i;
+      }
+    }
+    const score = inOrder * 100 - s.split("-").length;
+    if (!best || score > best.score) best = { slug, score };
+  }
+  return best ? best.slug : null;
+}
+
+function guessMoviesModSlug(title, year) {
+  // Fallback when the index misses: try the most common slug shapes.
+  // e.g. "Avengers Age of Ultron" (2015) ->
+  // download-avengers-age-of-ultron-2015-hindi-480p-720p-1080p
+  const base = normWords(title).join("-");
+  const y = year ? `-${year}` : "";
+  const langs = ["hindi", "english", "dual-audio", "hindi-english"];
+  const quals = ["480p-720p-1080p", "480p-720p", "720p-1080p", "480p-720p-1080p-2160p"];
+  const tries = [];
+  for (const lang of langs) {
+    for (const q of quals) {
+      tries.push(`${base}${y}-${lang}-${q}`);
+    }
+  }
+  return tries;
+}
+
+async function postForm(url, fields, timeoutMs = 12000) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const body = new URLSearchParams(fields).toString();
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "User-Agent": UA,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body,
+      signal: controller.signal,
+    });
+    return res;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function followNaukriSid(sid) {
+  // Follow one thenaukriadda sid to its final URL.
+  // Returns the final URL string, or null when the chain breaks
+  // or the file is dead (report-broken-links).
+  try {
+    // B: GET the sid page -> lp-land form (_lp_http).
+    const b = await fetchWithTimeout(
+      `${NAUKRI_BASE}/?sid=${encodeURIComponent(sid)}`,
+      { "User-Agent": UA },
+      12000
+    );
+    if (!b.ok) return null;
+    const bHtml = await b.text();
+    const lpHttp = (bHtml.match(/name="_lp_http" value="([^"]+)"/) || [])[1];
+    if (!lpHttp) return null;
+    // C: POST _lp_http -> timer page with the lp-s1-form.
+    const c = await postForm(NAUKRI_BASE + "/", { _lp_http: lpHttp });
+    if (!c.ok) return null;
+    const cHtml = await c.text();
+    const s1 = cHtml.match(
+      /<form id="lp-s1-form"[^>]*action="([^"]+)"/
+    );
+    if (!s1) return null;
+    const fields = {};
+    for (const m of cHtml.matchAll(
+      /name="(_lp_[a-z0-9_]+)"\s+value="([^"]*)"/g
+    )) {
+      fields[m[1]] = m[2];
+    }
+    if (!Object.keys(fields).length) return null;
+    // D: POST the s1 form -> generate page (cookie + Go link in JS).
+    const d = await postForm(s1[1], fields);
+    if (!d.ok) return null;
+    const dHtml = await d.text();
+    const go = dHtml.match(/lp_go=(lp-[a-z0-9]+)/);
+    const ck = dHtml.match(/sc\("(lp-[a-z0-9]+)","([^"]+)"/);
+    if (!go || !ck) return null;
+    // E: GET the Go link with the cookie -> window.location.replace().
+    const e = await fetchWithTimeout(
+      `${NAUKRI_BASE}/?lp_go=${go[1]}`,
+      {
+        "User-Agent": UA,
+        Cookie: `${ck[1]}=${encodeURIComponent(ck[2])}`,
+      },
+      12000
+    );
+    if (!e.ok) return null;
+    const eHtml = await e.text();
+    const redir = eHtml.match(
+      /window\.location\.replace\("([^"]+)"\)/
+    );
+    if (!redir) return null;
+    const final = redir[1].replace(/\\\//g, "/");
+    if (/report-broken-links/.test(final)) return null;
+    return final;
+  } catch {
+    return null;
+  }
+}
+
+async function moviesModDownload(title, year, quality) {
+  // Returns {downloadUrl, quality, filename, pageUrl} or null.
+  const wantQ = /^(480p|720p|1080p)$/.test(quality || "") ? quality : "720p";
+  // 1. Find the movie page.
+  let slug = findMoviesModSlug(title, year);
+  let pageUrl = slug ? `${MOVIESMOD_BASE}/download-${slug}/` : null;
+  if (!pageUrl) {
+    // Slug-guessing fallback: try likely URLs until one answers 200.
+    for (const guess of guessMoviesModSlug(title, year)) {
+      try {
+        const r = await fetchWithTimeout(
+          `${MOVIESMOD_BASE}/download-${guess}/`,
+          { "User-Agent": UA },
+          10000
+        );
+        if (r.ok) {
+          pageUrl = `${MOVIESMOD_BASE}/download-${guess}/`;
+          break;
+        }
+      } catch {
+        // Try the next guess.
+      }
+    }
+  }
+  if (!pageUrl) return null;
+  // 2. Movie page -> modpro archive ids (one per quality).
+  let pageHtml = "";
+  try {
+    const r = await fetchWithTimeout(pageUrl, { "User-Agent": UA }, 12000);
+    if (!r.ok) return null;
+    pageHtml = await r.text();
+  } catch {
+    return null;
+  }
+  const archiveIds = [
+    ...new Set(
+      [...pageHtml.matchAll(/links\.modpro\.blog\/archives\/(\d+)/g)].map(
+        (m) => m[1]
+      )
+    ),
+  ];
+  if (!archiveIds.length) return null;
+  // 3. Read each quality's modpro page (its title names the
+  //    quality, e.g. "... 720p ..."), then try the wanted quality
+  //    first and fall back to the others.
+  const archives = [];
+  for (const archiveId of archiveIds) {
+    try {
+      const r = await fetchWithTimeout(
+        `${MODPRO_BASE}/archives/${archiveId}`,
+        { "User-Agent": UA },
+        12000
+      );
+      if (!r.ok) continue;
+      const modHtml = await r.text();
+      // The page has two <title> tags: "Modpro.blog" and the post
+      // title ("... 720p – Links.ModPro.blog"). Use the one that
+      // names a quality.
+      const titles = [...modHtml.matchAll(/<title>([^<]*)<\/title>/g)].map(
+        (m) => m[1]
+      );
+      const modTitle =
+        titles.find((t) => /\d{3,4}p/.test(t)) || titles[1] || titles[0] || "";
+      const qInTitle = /(\d{3,4})p/.exec(modTitle);
+      const sids = [
+        ...new Set(
+          [...modHtml.matchAll(/en\.thenaukriadda\.in\/\?sid=([A-Za-z0-9+/=]+)/g)].map(
+            (m) => m[1]
+          )
+        ),
+      ];
+      if (!sids.length) continue;
+      archives.push({
+        archiveId,
+        quality: qInTitle ? `${qInTitle[1]}p` : "",
+        sids,
+      });
+    } catch {
+      continue;
+    }
+  }
+  if (!archives.length) return null;
+  archives.sort((a, b) => {
+    const aW = a.quality === wantQ ? 0 : 1;
+    const bW = b.quality === wantQ ? 0 : 1;
+    if (aW !== bW) return aW - bW;
+    // Among the rest, prefer higher quality first.
+    return (
+      (parseInt(b.quality, 10) || 0) - (parseInt(a.quality, 10) || 0)
+    );
+  });
+  for (const arch of archives) {
+    for (const sid of arch.sids) {
+      const final = await followNaukriSid(sid);
+      if (!final) continue;
+      // The final URL is the DriveSeed file page (or a short link to
+      // it). Follow any JS redirect once to reach the file page,
+      // then read its filename/size.
+      let filename = "";
+      let size = "";
+      let fileUrl = final;
+      try {
+        for (let hop = 0; hop < 2; hop++) {
+          const fr = await fetchWithTimeout(fileUrl, { "User-Agent": UA }, 12000);
+          if (!fr.ok) break;
+          const fHtml = await fr.text();
+          const redir = fHtml.match(
+            /window\.location\.replace\("([^"]+)"\)/
+          );
+          if (redir) {
+            const next = redir[1].replace(/\\\//g, "/");
+            fileUrl = new URL(next, fileUrl).href;
+            continue;
+          }
+          const t = (fHtml.match(/<title>([^<]*)<\/title>/) || [])[1] || "";
+          if (t && !/report-broken/i.test(t)) filename = t.trim();
+          const sz = fHtml.match(/Size\s*:\s*([0-9.]+ ?[KMG]B)/i);
+          if (sz) size = sz[1];
+          break;
+        }
+      } catch {
+        // Keep the URL anyway; the page itself is the proof.
+      }
+      return {
+        downloadUrl: fileUrl,
+        quality: arch.quality || wantQ,
+        filename,
+        size,
+        pageUrl,
+      };
+    }
+  }
+  return null;
+}
+
 // ---------- subtitles ----------
 
 function srtToVtt(srt) {
@@ -984,6 +1329,36 @@ async function handleMovie(req, res) {
         kind: null,
         noSource: true,
         error: "No LokLok source found for this title.",
+      });
+    }
+
+    // --- MoviesMod one-click download ---
+    if (q.dl) {
+      const title = String(q.dl).trim();
+      const year = String(q.year || "").trim();
+      const quality = String(q.quality || "").trim();
+      if (title.length < 2) {
+        return res.status(400).json({ error: "Title too short" });
+      }
+      const dl = await moviesModDownload(title, year, quality).catch(
+        () => null
+      );
+      if (dl) {
+        return res.status(200).json({
+          ok: true,
+          source: "moviesmod",
+          downloadUrl: dl.downloadUrl,
+          quality: dl.quality,
+          filename: dl.filename,
+          size: dl.size,
+          pageUrl: dl.pageUrl,
+        });
+      }
+      return res.status(200).json({
+        ok: true,
+        source: null,
+        noSource: true,
+        error: "No download found for this title.",
       });
     }
 
