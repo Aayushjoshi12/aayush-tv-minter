@@ -1314,57 +1314,94 @@ async function moviesModArchives(title, year, siteCode, slug) {
 // Resolve ONE archive (one quality) to its live file page:
 // try each of its servers' sids until one lands on a live file.
 // Returns {downloadUrl, quality, filename, size, pageUrl} or null.
+// Resolve ONE sid to its file (or null). Shared by the
+// first-wins movie path and the resolve-all series path.
+async function resolveOneSid(sid, arch, pageUrl) {
+  const final = await followNaukriSid(sid);
+  if (!final) return null;
+  // The final URL is the DriveSeed file page (or a short link to
+  // it). Follow any JS redirect once to reach the file page,
+  // then read its filename/size.
+  let filename = "";
+  let size = "";
+  let fileUrl = final;
+  try {
+    for (let hop = 0; hop < 2; hop++) {
+      const fr = await fetchWithTimeout(fileUrl, { "User-Agent": UA }, 12000);
+      if (!fr.ok) break;
+      const fHtml = await fr.text();
+      const redir = fHtml.match(
+        /window\.location\.replace\("([^"]+)"\)/
+      );
+      if (redir) {
+        const next = redir[1].replace(/\\\//g, "/");
+        fileUrl = new URL(next, fileUrl).href;
+        continue;
+      }
+      const t = (fHtml.match(/<title>([^<]*)<\/title>/) || [])[1] || "";
+      if (t && !/report-broken/i.test(t)) filename = t.trim();
+      const sz = fHtml.match(/Size\s*:\s*([0-9.]+ ?[KMG]B)/i);
+      if (sz) size = sz[1];
+      break;
+    }
+  } catch {
+    // Keep the URL anyway; the page itself is the proof.
+  }
+  // Validate: a real download is a DriveSeed file page (or a page
+  // whose title is a media file name). A sid that lands back on
+  // the movie site itself (e.g. uhdmovies.mov/4k-movies/) is a
+  // dead server, not a file — skip it.
+  const isFilePage = /driveseed\.org\/file\/[A-Za-z0-9]+/i.test(fileUrl);
+  const isMediaName = /\.(mkv|mp4|avi|mov|webm)\s*$/i.test(filename);
+  if (!isFilePage && !isMediaName) return null;
+  return {
+    downloadUrl: fileUrl,
+    // Prefer the quality named in the actual file name (e.g.
+    // "...2160p..." on a uhdmovies file); fall back to the
+    // archive's quality label.
+    quality: fileQuality(filename) || arch.quality || "",
+    filename,
+    size,
+    pageUrl,
+  };
+}
+
+// First working sid wins — right for MOVIES and season PACKS,
+// where the sids are mirrors/servers of the SAME file.
 async function resolveMoviesModArchive(arch, pageUrl) {
   for (const sid of arch.sids) {
-    const final = await followNaukriSid(sid);
-    if (!final) continue;
-    // The final URL is the DriveSeed file page (or a short link to
-    // it). Follow any JS redirect once to reach the file page,
-    // then read its filename/size.
-    let filename = "";
-    let size = "";
-    let fileUrl = final;
-    try {
-      for (let hop = 0; hop < 2; hop++) {
-        const fr = await fetchWithTimeout(fileUrl, { "User-Agent": UA }, 12000);
-        if (!fr.ok) break;
-        const fHtml = await fr.text();
-        const redir = fHtml.match(
-          /window\.location\.replace\("([^"]+)"\)/
-        );
-        if (redir) {
-          const next = redir[1].replace(/\\\//g, "/");
-          fileUrl = new URL(next, fileUrl).href;
-          continue;
-        }
-        const t = (fHtml.match(/<title>([^<]*)<\/title>/) || [])[1] || "";
-        if (t && !/report-broken/i.test(t)) filename = t.trim();
-        const sz = fHtml.match(/Size\s*:\s*([0-9.]+ ?[KMG]B)/i);
-        if (sz) size = sz[1];
-        break;
-      }
-    } catch {
-      // Keep the URL anyway; the page itself is the proof.
-    }
-    // Validate: a real download is a DriveSeed file page (or a page
-    // whose title is a media file name). A sid that lands back on
-    // the movie site itself (e.g. uhdmovies.mov/4k-movies/) is a
-    // dead server, not a file — skip it and try the next sid.
-    const isFilePage = /driveseed\.org\/file\/[A-Za-z0-9]+/i.test(fileUrl);
-    const isMediaName = /\.(mkv|mp4|avi|mov|webm)\s*$/i.test(filename);
-    if (!isFilePage && !isMediaName) continue;
-    return {
-      downloadUrl: fileUrl,
-      // Prefer the quality named in the actual file name (e.g.
-      // "...2160p..." on a uhdmovies file); fall back to the
-      // archive's quality label.
-      quality: fileQuality(filename) || arch.quality || "",
-      filename,
-      size,
-      pageUrl,
-    };
+    const file = await resolveOneSid(sid, arch, pageUrl).catch(() => null);
+    if (file) return file;
   }
   return null;
+}
+
+// Run async jobs with at most `limit` in flight at once.
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    async () => {
+      while (next < items.length) {
+        const i = next++;
+        out[i] = await fn(items[i], i).catch(() => null);
+      }
+    }
+  );
+  await Promise.all(workers);
+  return out;
+}
+
+// Resolve EVERY sid of a series "Episode Links" archive. Those
+// sids are NOT mirrors — one archive holds a whole season's
+// episodes (E01..E10 in one quality), so returning only the first
+// sid showed just Ep 1. Returns all files that resolve.
+async function resolveSeriesArchiveAll(arch, pageUrl) {
+  const files = await mapLimit(arch.sids, 10, (sid) =>
+    resolveOneSid(sid, arch, pageUrl)
+  );
+  return files.filter(Boolean);
 }
 
 // Quality named in a file name, e.g. "Movie.2021.2160p.HDR.mkv"
@@ -1722,22 +1759,24 @@ async function seasonEpisodes(title, year, siteCode, slug, seasonNum) {
     return info.season === seasonNum || (info.season == null && seasonNum === 0);
   });
   if (!mine.length) return null;
-  // Resolve each archive to its file (parallel), keeping the file
-  // tied to its own archive's title so the unit is never guessed
-  // from a different archive.
+  // Resolve each archive to ALL its files (parallel), keeping
+  // each file tied to its own archive's title so the unit is
+  // never guessed from a different archive. A series "Episode
+  // Links" archive holds a whole season's episodes in one
+  // quality (its sids are E01..E10, not mirrors), so every sid
+  // is resolved — resolving only the first sid showed just Ep 1.
   const resolved = (
     await Promise.all(
       mine.map(async (f) => {
         const info = parseSeriesArchive(f.title);
-        const file = await resolveMoviesModArchive(
+        const files = await resolveSeriesArchiveAll(
           { archiveId: f.archiveId, blogBase: f.blogBase, quality: info.quality, sids: f.sids },
           pageUrl
-        ).catch(() => null);
-        if (!file) return null;
-        return { file, info };
+        ).catch(() => []);
+        return files.map((file) => ({ file, info }));
       })
     )
-  ).filter(Boolean);
+  ).flat().filter(Boolean);
   if (!resolved.length) return null;
   const unitMap = new Map(); // key -> {label, kind, files}
   for (const { file, info } of resolved) {
