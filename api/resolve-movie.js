@@ -1316,6 +1316,232 @@ async function moviesModAllQualities(title, year, siteCode, slug) {
   return results;
 }
 
+// ---------- TV series downloads (?series= / ?ep=) ----------
+//
+// A series page links its files through blog archives, but unlike
+// a movie it has TWO kinds:
+//   * [ZIP/PACK] archives — the WHOLE SEASON in one zip, one per
+//     quality (e.g. "#1 Happy Family USA S01 480p – [ZIP/PACK]").
+//   * single-episode archives — one episode in one quality
+//     (e.g. "#1 Happy Family USA S01 480p x264"), where "#1" is
+//     the episode number.
+// Some series have neither marker: their archives are one season
+// pack per quality/host (e.g. "Got S01 Hindi 480p – OneDrive").
+// Those are returned as season downloads.
+// The ?series= mode resolves the PACKS eagerly (few, fast) and
+// returns single episodes as metadata (episode + quality +
+// archive id); tapping one calls ?ep= to resolve just that file.
+
+// Episode number from an archive title: "#1", "E01", "S01E01",
+// "Episode 1" — the first such marker wins.
+function seriesEpisode(title) {
+  const t = String(title || "");
+  let m = /S\d{1,2}E(\d{1,3})/i.exec(t);
+  if (m) return parseInt(m[1], 10);
+  m = /(?:^|[#\s])(\d{1,3})\s*(?:$|[\s\-–])/ .exec(t);
+  if (m) return parseInt(m[1], 10);
+  m = /E(\d{1,3})\b/i.exec(t);
+  if (m) return parseInt(m[1], 10);
+  m = /Episode\s*(\d{1,3})/i.exec(t);
+  if (m) return parseInt(m[1], 10);
+  return null;
+}
+
+function parseSeriesArchive(title) {
+  const t = String(title || "");
+  const q = /(\d{3,4})p/.exec(t);
+  return {
+    ep: seriesEpisode(t),
+    quality: q ? `${q[1]}p` : "",
+    isPack: /\[?\s*ZIP\s*\/\s*PACK\s*\]?/i.test(t) || /\bPACK\b/i.test(t),
+  };
+}
+
+// Fetch one blog archive page: its post title + its sids.
+async function fetchBlogArchive(blogBase, archiveId) {
+  try {
+    const r = await fetchWithTimeout(
+      `https://${blogBase}/archives/${archiveId}`,
+      { "User-Agent": UA },
+      12000
+    );
+    if (!r.ok) return null;
+    const html = await r.text();
+    const titles = [...html.matchAll(/<title>([^<]*)<\/title>/g)].map(
+      (m) => m[1]
+    );
+    const title =
+      titles.find((x) => /\d{3,4}p/.test(x)) || titles[1] || titles[0] || "";
+    const sids = [
+      ...new Set(
+        [...html.matchAll(/en\.thenaukriadda\.in\/\?sid=([A-Za-z0-9+/=]+)/g)].map(
+          (m) => m[1]
+        )
+      ),
+    ];
+    if (!sids.length) return null;
+    return { title, sids };
+  } catch {
+    return null;
+  }
+}
+
+// Find a series page URL (same lookup as moviesModArchives).
+async function findSeriesPage(title, year, siteCode, slug) {
+  const site = MODLIST_SITES[siteCode] || null;
+  if (siteCode && slug && site) {
+    return `${site.base}/download-${slug}/`;
+  }
+  const entry = await findModlistEntry(title, year, siteCode || "");
+  if (entry) {
+    const s = MODLIST_SITES[entry.site] || MODLIST_SITES.mm;
+    return `${s.base}/download-${entry.s}/`;
+  }
+  for (const guess of guessMoviesModSlug(title, year)) {
+    try {
+      const r = await fetchWithTimeout(
+        `${MOVIESMOD_BASE}/download-${guess}/`,
+        { "User-Agent": UA },
+        10000
+      );
+      if (r.ok) return `${MOVIESMOD_BASE}/download-${guess}/`;
+    } catch {
+      // Try the next guess.
+    }
+  }
+  return null;
+}
+
+// Series structure: {pageUrl, packs, episodes, seasons}.
+// packs: whole-season zips, resolved to files (one per quality).
+// episodes: [{ep, qualities: [{quality, archiveId, blogBase}]}]
+//   — metadata only; ?ep= resolves one on demand.
+// seasons: per-quality season archives when no episode numbers
+//   exist (e.g. GOT); resolved to files like packs.
+async function seriesInfo(title, year, siteCode, slug) {
+  const pageUrl = await findSeriesPage(title, year, siteCode, slug);
+  if (!pageUrl) return null;
+  let pageHtml = "";
+  try {
+    const r = await fetchWithTimeout(pageUrl, { "User-Agent": UA }, 12000);
+    if (!r.ok) return null;
+    pageHtml = await r.text();
+  } catch {
+    return null;
+  }
+  const blogLinks = [
+    ...new Set(
+      [...pageHtml.matchAll(
+        /https?:\/\/([a-z0-9.-]+\.blog)\/archives\/(\d+)/g
+      )].map((m) => `${m[1]}|${m[2]}`)
+    ),
+  ];
+  if (!blogLinks.length) return null;
+  // Read every archive's title + sids in parallel.
+  const fetched = (
+    await Promise.all(
+      blogLinks.map(async (link) => {
+        const [blogBase, archiveId] = link.split("|");
+        const got = await fetchBlogArchive(blogBase, archiveId);
+        if (!got) return null;
+        return { blogBase, archiveId, ...got };
+      })
+    )
+  ).filter(Boolean);
+  if (!fetched.length) return null;
+  const packs = [];
+  const epMap = new Map(); // ep -> [{quality, archiveId, blogBase}]
+  const seasonArch = []; // no episode number, not a pack
+  const packArch = [];
+  for (const f of fetched) {
+    const info = parseSeriesArchive(f.title);
+    const arch = {
+      archiveId: f.archiveId,
+      blogBase: f.blogBase,
+      quality: info.quality,
+      sids: f.sids,
+    };
+    if (info.isPack) {
+      packArch.push(arch);
+    } else if (info.ep != null) {
+      if (!epMap.has(info.ep)) epMap.set(info.ep, []);
+      epMap.get(info.ep).push({
+        quality: info.quality,
+        archiveId: f.archiveId,
+        blogBase: f.blogBase,
+      });
+    } else {
+      seasonArch.push(arch);
+    }
+  }
+  // Resolve the whole-season packs in parallel, one per quality
+  // (a season can list 720p twice — 10bit and x264 — keep one).
+  const packFiles = (
+    await Promise.all(
+      packArch.map((arch) => resolveMoviesModArchive(arch, pageUrl))
+    )
+  ).filter(Boolean);
+  const seenPackQ = new Set();
+  for (const file of packFiles.sort(
+    (a, b) => (parseInt(b.quality, 10) || 0) - (parseInt(a.quality, 10) || 0)
+  )) {
+    if (file.quality && seenPackQ.has(file.quality)) continue;
+    if (file.quality) seenPackQ.add(file.quality);
+    packs.push(file);
+  }
+  // Season archives (no episode number): resolve one per quality,
+  // in parallel.
+  const seasons = [];
+  const seenQ = new Set();
+  const seasonFiles = (
+    await Promise.all(
+      seasonArch
+        .sort(
+          (a, b) =>
+            (parseInt(b.quality, 10) || 0) - (parseInt(a.quality, 10) || 0)
+        )
+        .map((arch) => resolveMoviesModArchive(arch, pageUrl))
+    )
+  ).filter(Boolean);
+  for (const file of seasonFiles) {
+    if (file.quality && seenQ.has(file.quality)) continue;
+    if (file.quality) seenQ.add(file.quality);
+    seasons.push(file);
+  }
+  const episodes = [...epMap.entries()]
+    .sort((a, b) => a[0] - b[0])
+    .map(([ep, qualities]) => {
+      // One entry per quality (720p 10bit and 720p x264 collapse).
+      const seen = new Set();
+      const uniq = [];
+      for (const q of qualities.sort(
+        (a, b) =>
+          (parseInt(b.quality, 10) || 0) - (parseInt(a.quality, 10) || 0)
+      )) {
+        if (q.quality && seen.has(q.quality)) continue;
+        if (q.quality) seen.add(q.quality);
+        uniq.push(q);
+      }
+      return { ep, qualities: uniq };
+    });
+  packs.sort(
+    (a, b) => (parseInt(b.quality, 10) || 0) - (parseInt(a.quality, 10) || 0)
+  );
+  return { pageUrl, packs, episodes, seasons };
+}
+
+// Resolve ONE episode archive to its file (used by ?ep=).
+async function resolveEpisodeArchive(blogBase, archiveId, pageUrl) {
+  const got = await fetchBlogArchive(blogBase, archiveId);
+  if (!got) return null;
+  const info = parseSeriesArchive(got.title);
+  const file = await resolveMoviesModArchive(
+    { archiveId, blogBase, quality: info.quality, sids: got.sids },
+    pageUrl || ""
+  );
+  return file;
+}
+
 // ---------- subtitles ----------
 
 function srtToVtt(srt) {
@@ -1622,6 +1848,64 @@ export default async function handler(req, res) {
         source: "moviesmod",
         items: await moviesModSearch(query),
       });
+    }
+
+    // --- TV series: whole season at once, or one episode ---
+    // ?series=<title>&year=&site=&slug= returns:
+    //   packs: whole-season zips, resolved to files (one/quality)
+    //   episodes: [{ep, qualities:[{quality, archiveId, blogBase}]}]
+    //   seasons: per-quality season files when no episode numbers
+    // Single episodes are resolved on demand via ?ep= (below).
+    if (q.series) {
+      const title = String(q.series).trim();
+      if (!title) {
+        return res.status(400).json({ error: "Missing title" });
+      }
+      const year = String(q.year || "").trim();
+      const siteCode = String(q.site || "").trim();
+      const slug = String(q.slug || "").trim();
+      const info = await seriesInfo(title, year, siteCode, slug).catch(
+        () => null
+      );
+      if (!info || (!info.packs.length && !info.episodes.length && !info.seasons.length)) {
+        return res.status(200).json({
+          ok: true,
+          source: null,
+          noSource: true,
+          error: "No series download found for this title.",
+        });
+      }
+      return res.status(200).json({
+        ok: true,
+        source: "moviesmod",
+        pageUrl: info.pageUrl,
+        packs: info.packs,
+        episodes: info.episodes,
+        seasons: info.seasons,
+      });
+    }
+
+    // --- One episode: resolve a single archive to its file ---
+    // ?ep=<archiveId>&blog=<host>&page=<series page url>
+    if (q.ep) {
+      const archiveId = String(q.ep).trim();
+      const blogBase = String(q.blog || "").trim();
+      const pageUrl = String(q.page || "").trim();
+      if (!archiveId || !blogBase) {
+        return res.status(400).json({ error: "Missing episode" });
+      }
+      const file = await resolveEpisodeArchive(blogBase, archiveId, pageUrl).catch(
+        () => null
+      );
+      if (!file) {
+        return res.status(200).json({
+          ok: true,
+          source: null,
+          noSource: true,
+          error: "That episode is not available right now.",
+        });
+      }
+      return res.status(200).json({ ok: true, source: "moviesmod", ...file });
     }
 
     // --- MoviesMod one-click download: ALL qualities ---
