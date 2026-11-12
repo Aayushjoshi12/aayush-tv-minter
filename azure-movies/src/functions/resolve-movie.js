@@ -948,8 +948,11 @@ function slugToMovie(slug) {
     if (/^(19|20)\d{2}$/.test(parts[i])) {
       const y = parseInt(parts[i], 10);
       if (y >= 1900 && y <= 2030) {
+        // FIRST year wins — a range like "2017-2020" is the
+        // 2017 series, not 2020.
         yearIdx = i;
         year = parts[i];
+        break;
       }
     }
   }
@@ -962,7 +965,11 @@ function slugToMovie(slug) {
       }
     }
   }
-  const words = parts.slice(0, end);
+  // Title words exclude season markers (s01, s03, season) — they
+  // belong in the season suffix, not the title. So
+  // "dark-s01-s03-2017-..." is just "Dark", not
+  // "Dark S01 S03 2017".
+  const words = parts.slice(0, end).filter((w) => !/^s\d{1,2}$/i.test(w) && w.toLowerCase() !== "season");
   if (!words.length) return { title: "", year };
   const title = words
     .map((w, i) =>
@@ -974,7 +981,8 @@ function slugToMovie(slug) {
   // Series: keep the season in the title so "From Season 1-3"
   // does not look identical to a single-season "From".
   // e.g. "from-season-1-3-..." -> "From — Season 1-3",
-  // "loki-season-2-..." -> "Loki — Season 2".
+  // "loki-season-2-..." -> "Loki — Season 2",
+  // "dark-s01-s03-..." -> "Dark — Season 1-3".
   // A range only counts when the second number is a plausible
   // season (small, larger than the first) — "season-3-20" is just
   // Season 3, not a range to 20.
@@ -983,6 +991,15 @@ function slugToMovie(slug) {
     const first = parseInt(seasonM[1], 10);
     const second = seasonM[2] ? parseInt(seasonM[2], 10) : null;
     const range = second != null && second > first && second <= 12
+      ? `${first}-${second}`
+      : `${first}`;
+    return { title: `${title} — Season ${range}`, year, season: range };
+  }
+  const rangeM = /\bs(\d{1,2})-s(\d{1,2})\b/.exec(String(slug).toLowerCase());
+  if (rangeM) {
+    const first = parseInt(rangeM[1], 10);
+    const second = parseInt(rangeM[2], 10);
+    const range = second > first && second <= 12
       ? `${first}-${second}`
       : `${first}`;
     return { title: `${title} — Season ${range}`, year, season: range };
@@ -1033,13 +1050,21 @@ async function moviesModSearch(query) {
       poster,
       pageUrl: `${site.base}/download-${e.s}/`,
     });
-    if (results.length >= 80) break;
+    // Scan the WHOLE index — do not stop early. The index is
+    // ordered by site (MoviesMod first), so stopping at 80 matches
+    // would fill up on one site's titles and never reach the other
+    // sites (e.g. "Dark" filled 80 from MoviesMod alone and never
+    // reached the UHDMovies "Dark — Season 1-3" entry).
   }
   // Relevance: exact title first, then title starts with the query,
-  // then newest year first.
+  // then newest year first. A series title carries a " — Season N"
+  // suffix; the EXACT check uses the base title before that
+  // suffix, so "Dark — Season 1-3" counts as an exact match for
+  // the query "Dark" (and for an IMDb lookup of "Dark").
+  const baseTitle = (t) => t.toLowerCase().split(" — season")[0].trim();
   results.sort((a, b) => {
-    const aExact = a.title.toLowerCase() === qNorm ? 0 : 1;
-    const bExact = b.title.toLowerCase() === qNorm ? 0 : 1;
+    const aExact = baseTitle(a.title) === qNorm ? 0 : 1;
+    const bExact = baseTitle(b.title) === qNorm ? 0 : 1;
     if (aExact !== bExact) return aExact - bExact;
     const aStart = a.title.toLowerCase().startsWith(qNorm) ? 0 : 1;
     const bStart = b.title.toLowerCase().startsWith(qNorm) ? 0 : 1;
