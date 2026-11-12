@@ -136,7 +136,7 @@
 // Returned URLs are time-limited and only ever sent to the user's own
 // browser.
 
-const { MOVIESMOD_SLUGS } = require("./moviesmod-index.js");
+const { MODLIST_INDEX } = require("./modlist-index.js");
 
 const NET52_BASES = [
   "https://net52.cc/pv",
@@ -755,15 +755,32 @@ async function loklokPlay(title, year) {
 // fallback when the index misses. The index goes stale as new
 // movies are added; rebuild it from the sitemaps when lookups
 // start missing.
+//
+// The index now covers the WHOLE modlist network (12 Nov 2026 —
+// the user asked for all sites, not just MoviesMod):
+//   mm  = moviesmod.tw (Hollywood)     — ~21,705 entries
+//   ml  = moviesleech.media (Bollywood)— ~3,235 entries
+//   uhd = uhdmovies.beauty (4K/UHD)    — ~5,461 entries
+//   af  = animeflix.my (anime)         — ~759 entries
+// (gamesleech / softwareleech are games + software, not movies.)
+// Built by tools/build-modlist-index.py from each site's Yoast
+// sitemaps, which also carry the poster URL (<image:loc>).
+// Entry: {s: slug, site: mm|ml|uhd|af, p: poster URL}.
+const MODLIST_SITES = {
+  mm: { base: "https://moviesmod.tw", name: "MoviesMod" },
+  ml: { base: "https://moviesleech.media", name: "MoviesLeech" },
+  uhd: { base: "https://uhdmovies.beauty", name: "UHDMovies" },
+  af: { base: "https://animeflix.my", name: "AnimeFlix" },
+};
 const MOVIESMOD_BASE = "https://moviesmod.tw";
 const MODPRO_BASE = "https://links.modpro.blog";
 const NAUKRI_BASE = "https://en.thenaukriadda.in";
 
 function loadMoviesModIndex() {
-  // Static import (api/moviesmod-index.js) so the bundler includes
-  // the 21,704 slugs with the function — no filesystem reads, which
-  // Vercel's bundler cannot trace reliably.
-  return MOVIESMOD_SLUGS;
+  // Static import (api/modlist-index.js) so the bundler includes
+  // the 31,160 entries with the function — no filesystem reads,
+  // which Vercel's bundler cannot trace reliably.
+  return MODLIST_INDEX;
 }
 
 const normWords = (s) =>
@@ -773,13 +790,16 @@ const normWords = (s) =>
     .split(" ")
     .filter(Boolean);
 
-function findMoviesModSlug(title, year) {
-  const slugs = loadMoviesModIndex();
+function findModlistEntry(title, year, siteCode) {
+  // Best-matching index entry for a title (+ optional year and
+  // site). Returns {s, site, p} or null.
+  const entries = loadMoviesModIndex();
   const words = normWords(title);
-  if (!words.length || !slugs.length) return null;
+  if (!words.length || !entries.length) return null;
   let best = null;
-  for (const slug of slugs) {
-    const s = String(slug).toLowerCase();
+  for (const e of entries) {
+    if (siteCode && e.site !== siteCode) continue;
+    const s = String(e.s).toLowerCase();
     if (year && !s.includes(String(year))) continue;
     if (!words.every((w) => s.includes(w))) continue;
     // Score: words in order first, then a tighter (shorter) slug.
@@ -793,9 +813,15 @@ function findMoviesModSlug(title, year) {
       }
     }
     const score = inOrder * 100 - s.split("-").length;
-    if (!best || score > best.score) best = { slug, score };
+    if (!best || score > best.score) best = { entry: e, score };
   }
-  return best ? best.slug : null;
+  return best ? best.entry : null;
+}
+
+function findMoviesModSlug(title, year) {
+  // Backwards-compat wrapper: the slug of the best match (any site).
+  const e = findModlistEntry(title, year, "");
+  return e ? e.s : null;
 }
 
 function guessMoviesModSlug(title, year) {
@@ -872,26 +898,35 @@ function slugToMovie(slug) {
 }
 
 function moviesModSearch(query) {
+  // Searches the WHOLE modlist network index (moviesmod +
+  // moviesleech + uhdmovies + animeflix), not just MoviesMod.
   const words = normWords(query);
   if (!words.length) return [];
   const qNorm = words.join(" ");
   const results = [];
   const seen = new Set();
-  for (const slug of MOVIESMOD_SLUGS) {
-    const s = String(slug).toLowerCase();
+  for (const e of MODLIST_INDEX) {
+    const s = String(e.s).toLowerCase();
     if (!words.every((w) => s.includes(w))) continue;
-    const { title, year } = slugToMovie(slug);
+    const { title, year } = slugToMovie(e.s);
     if (!title) continue;
-    const key = title.toLowerCase() + "|" + year;
+    // Same title+year can appear on several network sites (e.g. a
+    // Bollywood film on both MoviesMod and MoviesLeech) — keep one
+    // entry per site so the user sees which site carries it.
+    const key = title.toLowerCase() + "|" + year + "|" + e.site;
     if (seen.has(key)) continue;
     seen.add(key);
+    const site = MODLIST_SITES[e.site] || MODLIST_SITES.mm;
     results.push({
       title,
       year,
-      slug,
-      pageUrl: `${MOVIESMOD_BASE}/download-${slug}/`,
+      slug: e.s,
+      site: e.site,
+      siteName: site.name,
+      poster: e.p || "",
+      pageUrl: `${site.base}/download-${e.s}/`,
     });
-    if (results.length >= 60) break;
+    if (results.length >= 80) break;
   }
   // Relevance: exact title first, then title starts with the query,
   // then newest year first.
@@ -988,12 +1023,32 @@ async function followNaukriSid(sid) {
 }
 
 // Shared step for the download chain: find the movie page and read
-// its modpro archives (one per quality, each with its download sids).
-// Returns {pageUrl, archives: [{archiveId, quality, sids}]} or null.
-async function moviesModArchives(title, year) {
+// its download links. Each network site links its files a little
+// differently, but they all end at the same thenaukriadda sid chain:
+//   moviesmod.tw     -> links.modpro.blog/archives/<id> per quality
+//   moviesleech.media-> leechpro.blog/archives/<id> per quality
+//   uhdmovies.beauty -> direct en.thenaukriadda.in/?sid= links
+//                        (no blog step; quality is in the page title)
+//   animeflix.my     -> episodes.animeflix.my/archives/<id>, whose
+//                        chain is a different shortener (ronracepub)
+//                        — NOT yet supported; those titles show in
+//                        search but return noSource for download.
+// Returns {pageUrl, archives: [{archiveId, blogBase, quality, sids}]}
+// or null. For direct sids, archiveId/blogBase are "" and the
+// quality comes from the movie page title.
+async function moviesModArchives(title, year, siteCode, slug) {
   // 1. Find the movie page.
-  let slug = findMoviesModSlug(title, year);
-  let pageUrl = slug ? `${MOVIESMOD_BASE}/download-${slug}/` : null;
+  let pageUrl = null;
+  const site = MODLIST_SITES[siteCode] || null;
+  if (siteCode && slug && site) {
+    pageUrl = `${site.base}/download-${slug}/`;
+  } else {
+    const entry = findModlistEntry(title, year, siteCode || "");
+    if (entry) {
+      const s = MODLIST_SITES[entry.site] || MODLIST_SITES.mm;
+      pageUrl = `${s.base}/download-${entry.s}/`;
+    }
+  }
   if (!pageUrl) {
     // Slug-guessing fallback: try likely URLs until one answers 200.
     for (const guess of guessMoviesModSlug(title, year)) {
@@ -1013,7 +1068,7 @@ async function moviesModArchives(title, year) {
     }
   }
   if (!pageUrl) return null;
-  // 2. Movie page -> modpro archive ids (one per quality).
+  // 2. Movie page -> download links.
   let pageHtml = "";
   try {
     const r = await fetchWithTimeout(pageUrl, { "User-Agent": UA }, 12000);
@@ -1022,29 +1077,31 @@ async function moviesModArchives(title, year) {
   } catch {
     return null;
   }
-  const archiveIds = [
+  // Quality hint from the movie page title (uhdmovies names its
+  // qualities there, e.g. "1080p 10Bit || 2160p 4k").
+  const pageTitle = (pageHtml.match(/<title>([^<]*)<\/title>/) || [])[1] || "";
+  const archives = [];
+  // (a) Blog archive links: any *.blog/archives/<id> (modpro,
+  // leechpro, ...). Each is one quality; fetch it for its sids.
+  const blogLinks = [
     ...new Set(
-      [...pageHtml.matchAll(/links\.modpro\.blog\/archives\/(\d+)/g)].map(
-        (m) => m[1]
-      )
+      [...pageHtml.matchAll(
+        /https?:\/\/([a-z0-9.-]+\.blog)\/archives\/(\d+)/g
+      )].map((m) => `${m[1]}|${m[2]}`)
     ),
   ];
-  if (!archiveIds.length) return null;
-  // 3. Read each quality's modpro page (its title names the
-  //    quality, e.g. "... 720p ...") and collect its sids.
-  const archives = [];
-  for (const archiveId of archiveIds) {
+  for (const link of blogLinks) {
+    const [blogBase, archiveId] = link.split("|");
     try {
       const r = await fetchWithTimeout(
-        `${MODPRO_BASE}/archives/${archiveId}`,
+        `https://${blogBase}/archives/${archiveId}`,
         { "User-Agent": UA },
         12000
       );
       if (!r.ok) continue;
       const modHtml = await r.text();
-      // The page has two <title> tags: "Modpro.blog" and the post
-      // title ("... 720p – Links.ModPro.blog"). Use the one that
-      // names a quality.
+      // The page has two <title> tags: the blog name and the post
+      // title ("... 720p – ..."). Use the one that names a quality.
       const titles = [...modHtml.matchAll(/<title>([^<]*)<\/title>/g)].map(
         (m) => m[1]
       );
@@ -1061,12 +1118,32 @@ async function moviesModArchives(title, year) {
       if (!sids.length) continue;
       archives.push({
         archiveId,
+        blogBase,
         quality: qInTitle ? `${qInTitle[1]}p` : "",
         sids,
       });
     } catch {
       continue;
     }
+  }
+  // (b) Direct thenaukriadda sids on the movie page itself
+  // (uhdmovies). These are servers for the page's quality set;
+  // the quality is read from the file name after resolving.
+  const directSids = [
+    ...new Set(
+      [...pageHtml.matchAll(/en\.thenaukriadda\.in\/\?sid=([A-Za-z0-9+/=]+)/g)].map(
+        (m) => m[1]
+      )
+    ),
+  ];
+  if (directSids.length) {
+    const qInPage = /(\d{3,4})p/.exec(pageTitle);
+    archives.push({
+      archiveId: "",
+      blogBase: "",
+      quality: qInPage ? `${qInPage[1]}p` : "",
+      sids: directSids,
+    });
   }
   if (!archives.length) return null;
   return { pageUrl, archives };
@@ -1107,9 +1184,19 @@ async function resolveMoviesModArchive(arch, pageUrl) {
     } catch {
       // Keep the URL anyway; the page itself is the proof.
     }
+    // Validate: a real download is a DriveSeed file page (or a page
+    // whose title is a media file name). A sid that lands back on
+    // the movie site itself (e.g. uhdmovies.mov/4k-movies/) is a
+    // dead server, not a file — skip it and try the next sid.
+    const isFilePage = /driveseed\.org\/file\/[A-Za-z0-9]+/i.test(fileUrl);
+    const isMediaName = /\.(mkv|mp4|avi|mov|webm)\s*$/i.test(filename);
+    if (!isFilePage && !isMediaName) continue;
     return {
       downloadUrl: fileUrl,
-      quality: arch.quality || "",
+      // Prefer the quality named in the actual file name (e.g.
+      // "...2160p..." on a uhdmovies file); fall back to the
+      // archive's quality label.
+      quality: fileQuality(filename) || arch.quality || "",
       filename,
       size,
       pageUrl,
@@ -1118,13 +1205,21 @@ async function resolveMoviesModArchive(arch, pageUrl) {
   return null;
 }
 
-async function moviesModDownload(title, year, quality) {
+// Quality named in a file name, e.g. "Movie.2021.2160p.HDR.mkv"
+// -> "2160p". Used so direct-sid titles (uhdmovies) get the right
+// label from the file itself.
+function fileQuality(filename) {
+  const m = /(\d{3,4})p/i.exec(String(filename || ""));
+  return m ? `${m[1]}p` : "";
+}
+
+async function moviesModDownload(title, year, quality, siteCode, slug) {
   // Returns {downloadUrl, quality, filename, pageUrl} or null.
   // Tries the wanted quality first, then the others.
   const wantQ = /^(480p|720p|1080p|2160p)$/.test(quality || "")
     ? quality
     : "720p";
-  const found = await moviesModArchives(title, year);
+  const found = await moviesModArchives(title, year, siteCode, slug);
   if (!found) return null;
   const { pageUrl, archives } = found;
   archives.sort((a, b) => {
@@ -1146,27 +1241,53 @@ async function moviesModDownload(title, year, quality) {
   return null;
 }
 
-async function moviesModAllQualities(title, year) {
-  // Returns one live file per quality MoviesMod has for the title
-  // (480p/720p/1080p/2160p, highest first), each resolved in
-  // parallel. [] when nothing is live.
-  const found = await moviesModArchives(title, year);
+async function moviesModAllQualities(title, year, siteCode, slug) {
+  // Returns one live file per quality the network has for the title
+  // (480p/720p/1080p/2160p, highest first). Blog archives give one
+  // file each (first working server); a direct-sid page (uhdmovies)
+  // is tried across several servers so both its qualities surface.
+  const found = await moviesModArchives(title, year, siteCode, slug);
   if (!found) return [];
   const { pageUrl, archives } = found;
-  // Dedupe by quality (a title can list the same quality twice)
-  // and sort highest first.
+  // Dedupe blog archives by quality (a title can list the same
+  // quality twice) and sort highest first.
   const byQuality = new Map();
   for (const arch of archives) {
+    if (!arch.archiveId) continue; // direct sids handled below
     const key = arch.quality || "unknown";
     if (!byQuality.has(key)) byQuality.set(key, arch);
   }
   const unique = [...byQuality.values()].sort(
     (a, b) => (parseInt(b.quality, 10) || 0) - (parseInt(a.quality, 10) || 0)
   );
-  const results = await Promise.all(
-    unique.map((arch) => resolveMoviesModArchive(arch, pageUrl))
+  const results = (
+    await Promise.all(
+      unique.map((arch) => resolveMoviesModArchive(arch, pageUrl))
+    )
+  ).filter(Boolean);
+  // Direct sids (uhdmovies): resolve up to 8 servers in parallel
+  // and keep one file per distinct quality named in the file names.
+  const direct = archives.find((a) => !a.archiveId);
+  if (direct) {
+    const seenQ = new Set(results.map((x) => x.quality));
+    const settled = await Promise.all(
+      direct.sids.slice(0, 8).map((sid) =>
+        resolveMoviesModArchive({ ...direct, sids: [sid] }, pageUrl)
+      )
+    );
+    for (const r of settled) {
+      if (!r) continue;
+      if (r.quality && seenQ.has(r.quality)) continue;
+      if (r.quality) seenQ.add(r.quality);
+      if (!results.some((x) => x.downloadUrl === r.downloadUrl)) {
+        results.push(r);
+      }
+    }
+  }
+  results.sort(
+    (a, b) => (parseInt(b.quality, 10) || 0) - (parseInt(a.quality, 10) || 0)
   );
-  return results.filter(Boolean);
+  return results;
 }
 
 // ---------- subtitles ----------
@@ -1490,9 +1611,16 @@ async function handleMovie(req, res) {
         return res.status(400).json({ error: "Missing title" });
       }
       const year = String(q.year || "").trim();
-      const qualities = await moviesModAllQualities(title, year).catch(
-        () => []
-      );
+      // Exact page when the search result gave it (site + slug);
+      // otherwise the title is looked up in the whole network index.
+      const siteCode = String(q.site || "").trim();
+      const slug = String(q.slug || "").trim();
+      const qualities = await moviesModAllQualities(
+        title,
+        year,
+        siteCode,
+        slug
+      ).catch(() => []);
       if (!qualities.length) {
         return res.status(200).json({
           ok: true,
@@ -1513,12 +1641,18 @@ async function handleMovie(req, res) {
       const title = String(q.dl).trim();
       const year = String(q.year || "").trim();
       const quality = String(q.quality || "").trim();
+      const siteCode = String(q.site || "").trim();
+      const slug = String(q.slug || "").trim();
       if (title.length < 2) {
         return res.status(400).json({ error: "Title too short" });
       }
-      const dl = await moviesModDownload(title, year, quality).catch(
-        () => null
-      );
+      const dl = await moviesModDownload(
+        title,
+        year,
+        quality,
+        siteCode,
+        slug
+      ).catch(() => null);
       if (dl) {
         return res.status(200).json({
           ok: true,

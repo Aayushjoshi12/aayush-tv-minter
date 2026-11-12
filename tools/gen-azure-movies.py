@@ -4,13 +4,13 @@ Vercel source (api/resolve-movie.js).
 
 Transformations (Vercel ESM -> Azure Functions v4 CommonJS):
   1. Swap the header comment for the Azure header.
-  2. Convert the moviesmod-index ESM import to require().
+  2. Convert the modlist-index ESM import to require().
   3. Swap the Vercel selfUrl for the Azure SELF_URL (set from the
      request origin at runtime, defaulting to the Function App URL).
   4. Rename `export default async function handler` to
      `async function handleMovie`.
   5. Append the app.http("resolve-movie") wrapper block.
-  6. Copy api/moviesmod-index.js into azure-movies/src/functions/
+  6. Copy api/modlist-index.js into azure-movies/src/functions/
      (so the relative require() resolves next to the function).
 
 The Azure Function App is aayush-tv-movies (SEPARATE from the techjail
@@ -25,8 +25,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "api" / "resolve-movie.js"
 DST = ROOT / "azure-movies" / "src" / "functions" / "resolve-movie.js"
-INDEX_SRC = ROOT / "api" / "moviesmod-index.js"
-INDEX_DST = ROOT / "azure-movies" / "src" / "functions" / "moviesmod-index.js"
+INDEX_SRC = ROOT / "api" / "modlist-index.js"
+INDEX_DST = ROOT / "azure-movies" / "src" / "functions" / "modlist-index.js"
 
 AZURE_URL = (
     "https://aayush-tv-movies-geesc6d8g6fchvfk.koreacentral-01."
@@ -99,8 +99,8 @@ def main():
     # 2. ESM import of the index -> require(). The resolver only
     #    imports the index module now (no fs/path/url imports).
     out = out.replace(
-        'import { MOVIESMOD_SLUGS } from "./moviesmod-index.js";',
-        'const { MOVIESMOD_SLUGS } = require("./moviesmod-index.js");',
+        'import { MODLIST_INDEX } from "./modlist-index.js";',
+        'const { MODLIST_INDEX } = require("./modlist-index.js");',
     )
     assert re.search(r"^import ", out, re.M) is None, "an import survived"
 
@@ -124,13 +124,13 @@ def main():
     DST.write_text(out)
     print(f"wrote {DST} ({len(out)} bytes)")
 
-    # 6. Copy the MoviesMod index module next to the Azure function
+    # 6. Copy the modlist index module next to the Azure function
     #    (so the relative require() resolves).
     if INDEX_SRC.exists():
         shutil.copy2(INDEX_SRC, INDEX_DST)
         print(f"copied {INDEX_SRC.name} -> azure-movies/src/functions/ ({INDEX_SRC.stat().st_size} bytes)")
     else:
-        print("WARNING: api/moviesmod-index.js not found, skipping")
+        print("WARNING: api/modlist-index.js not found, skipping")
 
 
 if __name__ == "__main__":
