@@ -702,6 +702,10 @@ const DIRECT = {
   ],
   "golf-channel": [
     { source: "GOLF Channel (direct)", url: "https://dash4.antik.sk/live/test_golf_channel/playlist.m3u8" },
+    { source: "GOLF Channel US (direct)", url: "https://tvsen6.aynaott.com/golfchannel/index.m3u8" },
+  ],
+  "cbs-sports-golazo-network": [
+    { source: "CBS Sports Golazo (direct)", url: "https://dai.google.com/linear/hls/event/7f3Wv6f7QEKfQna22jHqLQ/master.m3u8" },
   ],
   "espn-2-latin-america": [
     { source: "ESPN 2 Latin America (direct)", url: "https://barinaslive1.boldmss.com/ESPN_2/ESPN_2.isml/ESPN_2.m3u8" },
