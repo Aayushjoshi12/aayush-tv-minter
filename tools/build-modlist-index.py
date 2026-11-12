@@ -199,8 +199,10 @@ def main():
     # by sitemap <lastmod>. A tiny static file the Movies home page
     # fetches directly (public/modlist-new.json) so new movies and
     # series appear on the home page without a search.
-    # Dedupe by title+year (one card per title — the same title on
-    # two sites is the same title, not two cards).
+    # Dedupe by BASE title only (strip the " — Season …" suffix):
+    # a series and a movie with the same name (e.g. Visionquest)
+    # are one card here — the New feed is a showcase, not a
+    # catalogue, and the same poster twice reads as a duplicate.
     newest = sorted(
         ((lm, code, slug, poster) for (code, slug), (poster, lm) in entries.items() if lm),
         key=lambda t: t[0],
@@ -212,7 +214,7 @@ def main():
         info = slug_to_movie(slug)
         if not info["title"]:
             continue
-        key = (info["title"].lower(), info["year"])
+        key = info["title"].lower().split(" — season")[0].strip()
         if key in seen_new:
             continue
         seen_new.add(key)
