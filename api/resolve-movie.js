@@ -821,7 +821,21 @@ async function findModlistEntry(title, year, siteCode) {
     const s = String(e.s).toLowerCase();
     if (year && !s.includes(String(year))) continue;
     if (!words.every((w) => s.includes(w))) continue;
-    // Score: words in order first, then a tighter (shorter) slug.
+    // Score: an entry whose parsed TITLE is exactly the query
+    // beats one that merely starts with it — "From" the series
+    // vs "From Black" the movie: the old shortest-slug rule
+    // picked the movie (fewer slug segments) and the series
+    // lookup then found no episode links. Then words in order,
+    // then a tighter (shorter) slug.
+    const parsed = slugToMovie(e.s);
+    const titleWords = normWords(String(parsed.title).split("—")[0]);
+    const exact =
+      titleWords.length === words.length &&
+      titleWords.every((w, i) => w === words[i]);
+    const prefix =
+      !exact &&
+      titleWords.length > words.length &&
+      words.every((w, i) => w === titleWords[i]);
     let idx = -1;
     let inOrder = 0;
     for (const w of words) {
@@ -831,7 +845,8 @@ async function findModlistEntry(title, year, siteCode) {
         idx = i;
       }
     }
-    const score = inOrder * 100 - s.split("-").length;
+    const score =
+      (exact ? 10000 : prefix ? 1000 : 0) + inOrder * 100 - s.split("-").length;
     if (!best || score > best.score) best = { entry: e, score };
   }
   return best ? best.entry : null;
