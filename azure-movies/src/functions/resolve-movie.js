@@ -115,7 +115,15 @@
 //                               "items": [{title, year, slug, pageUrl}]}
 //                               (the Movies page search box searches
 //                               MoviesMod only — see below)
-//   ?dl=<title>&year=<year>&quality=<480p|720p|1080p>
+//   ?dlall=<title>&year=<year>  -> 200 {"ok": true, "source":
+//                               "moviesmod", "qualities": [{quality,
+//                               downloadUrl, filename, size,
+//                               pageUrl}]} — one live file per
+//                               quality MoviesMod has (480p/720p/
+//                               1080p/2160p, highest first). The
+//                               page shows these as a quality
+//                               picker. (12 Nov 2026)
+//   ?dl=<title>&year=<year>&quality=<480p|720p|1080p|2160p>
 //                            -> 200 {"ok": true, "source": "moviesmod",
 //                               "downloadUrl": "<DriveSeed file page>",
 //                               "quality": "720p", "filename": "...mkv",
@@ -979,9 +987,10 @@ async function followNaukriSid(sid) {
   }
 }
 
-async function moviesModDownload(title, year, quality) {
-  // Returns {downloadUrl, quality, filename, pageUrl} or null.
-  const wantQ = /^(480p|720p|1080p)$/.test(quality || "") ? quality : "720p";
+// Shared step for the download chain: find the movie page and read
+// its modpro archives (one per quality, each with its download sids).
+// Returns {pageUrl, archives: [{archiveId, quality, sids}]} or null.
+async function moviesModArchives(title, year) {
   // 1. Find the movie page.
   let slug = findMoviesModSlug(title, year);
   let pageUrl = slug ? `${MOVIESMOD_BASE}/download-${slug}/` : null;
@@ -1022,8 +1031,7 @@ async function moviesModDownload(title, year, quality) {
   ];
   if (!archiveIds.length) return null;
   // 3. Read each quality's modpro page (its title names the
-  //    quality, e.g. "... 720p ..."), then try the wanted quality
-  //    first and fall back to the others.
+  //    quality, e.g. "... 720p ...") and collect its sids.
   const archives = [];
   for (const archiveId of archiveIds) {
     try {
@@ -1061,6 +1069,64 @@ async function moviesModDownload(title, year, quality) {
     }
   }
   if (!archives.length) return null;
+  return { pageUrl, archives };
+}
+
+// Resolve ONE archive (one quality) to its live file page:
+// try each of its servers' sids until one lands on a live file.
+// Returns {downloadUrl, quality, filename, size, pageUrl} or null.
+async function resolveMoviesModArchive(arch, pageUrl) {
+  for (const sid of arch.sids) {
+    const final = await followNaukriSid(sid);
+    if (!final) continue;
+    // The final URL is the DriveSeed file page (or a short link to
+    // it). Follow any JS redirect once to reach the file page,
+    // then read its filename/size.
+    let filename = "";
+    let size = "";
+    let fileUrl = final;
+    try {
+      for (let hop = 0; hop < 2; hop++) {
+        const fr = await fetchWithTimeout(fileUrl, { "User-Agent": UA }, 12000);
+        if (!fr.ok) break;
+        const fHtml = await fr.text();
+        const redir = fHtml.match(
+          /window\.location\.replace\("([^"]+)"\)/
+        );
+        if (redir) {
+          const next = redir[1].replace(/\\\//g, "/");
+          fileUrl = new URL(next, fileUrl).href;
+          continue;
+        }
+        const t = (fHtml.match(/<title>([^<]*)<\/title>/) || [])[1] || "";
+        if (t && !/report-broken/i.test(t)) filename = t.trim();
+        const sz = fHtml.match(/Size\s*:\s*([0-9.]+ ?[KMG]B)/i);
+        if (sz) size = sz[1];
+        break;
+      }
+    } catch {
+      // Keep the URL anyway; the page itself is the proof.
+    }
+    return {
+      downloadUrl: fileUrl,
+      quality: arch.quality || "",
+      filename,
+      size,
+      pageUrl,
+    };
+  }
+  return null;
+}
+
+async function moviesModDownload(title, year, quality) {
+  // Returns {downloadUrl, quality, filename, pageUrl} or null.
+  // Tries the wanted quality first, then the others.
+  const wantQ = /^(480p|720p|1080p|2160p)$/.test(quality || "")
+    ? quality
+    : "720p";
+  const found = await moviesModArchives(title, year);
+  if (!found) return null;
+  const { pageUrl, archives } = found;
   archives.sort((a, b) => {
     const aW = a.quality === wantQ ? 0 : 1;
     const bW = b.quality === wantQ ? 0 : 1;
@@ -1071,47 +1137,36 @@ async function moviesModDownload(title, year, quality) {
     );
   });
   for (const arch of archives) {
-    for (const sid of arch.sids) {
-      const final = await followNaukriSid(sid);
-      if (!final) continue;
-      // The final URL is the DriveSeed file page (or a short link to
-      // it). Follow any JS redirect once to reach the file page,
-      // then read its filename/size.
-      let filename = "";
-      let size = "";
-      let fileUrl = final;
-      try {
-        for (let hop = 0; hop < 2; hop++) {
-          const fr = await fetchWithTimeout(fileUrl, { "User-Agent": UA }, 12000);
-          if (!fr.ok) break;
-          const fHtml = await fr.text();
-          const redir = fHtml.match(
-            /window\.location\.replace\("([^"]+)"\)/
-          );
-          if (redir) {
-            const next = redir[1].replace(/\\\//g, "/");
-            fileUrl = new URL(next, fileUrl).href;
-            continue;
-          }
-          const t = (fHtml.match(/<title>([^<]*)<\/title>/) || [])[1] || "";
-          if (t && !/report-broken/i.test(t)) filename = t.trim();
-          const sz = fHtml.match(/Size\s*:\s*([0-9.]+ ?[KMG]B)/i);
-          if (sz) size = sz[1];
-          break;
-        }
-      } catch {
-        // Keep the URL anyway; the page itself is the proof.
-      }
-      return {
-        downloadUrl: fileUrl,
-        quality: arch.quality || wantQ,
-        filename,
-        size,
-        pageUrl,
-      };
+    const result = await resolveMoviesModArchive(arch, pageUrl);
+    if (result) {
+      if (!result.quality) result.quality = wantQ;
+      return result;
     }
   }
   return null;
+}
+
+async function moviesModAllQualities(title, year) {
+  // Returns one live file per quality MoviesMod has for the title
+  // (480p/720p/1080p/2160p, highest first), each resolved in
+  // parallel. [] when nothing is live.
+  const found = await moviesModArchives(title, year);
+  if (!found) return [];
+  const { pageUrl, archives } = found;
+  // Dedupe by quality (a title can list the same quality twice)
+  // and sort highest first.
+  const byQuality = new Map();
+  for (const arch of archives) {
+    const key = arch.quality || "unknown";
+    if (!byQuality.has(key)) byQuality.set(key, arch);
+  }
+  const unique = [...byQuality.values()].sort(
+    (a, b) => (parseInt(b.quality, 10) || 0) - (parseInt(a.quality, 10) || 0)
+  );
+  const results = await Promise.all(
+    unique.map((arch) => resolveMoviesModArchive(arch, pageUrl))
+  );
+  return results.filter(Boolean);
 }
 
 // ---------- subtitles ----------
@@ -1419,6 +1474,37 @@ async function handleMovie(req, res) {
         ok: true,
         source: "moviesmod",
         items: moviesModSearch(query),
+      });
+    }
+
+    // --- MoviesMod one-click download: ALL qualities ---
+    // ?dlall=<title>&year=<year> -> 200 {"ok": true,
+    // "source": "moviesmod", "qualities": [{quality, downloadUrl,
+    // filename, size, pageUrl}]} — one live file per quality
+    // MoviesMod has for the title (480p/720p/1080p/2160p,
+    // highest first). The page shows these as a quality picker.
+    // (The single-quality ?dl= stays for backwards compat.)
+    if (q.dlall) {
+      const title = String(q.dlall).trim();
+      if (!title) {
+        return res.status(400).json({ error: "Missing title" });
+      }
+      const year = String(q.year || "").trim();
+      const qualities = await moviesModAllQualities(title, year).catch(
+        () => []
+      );
+      if (!qualities.length) {
+        return res.status(200).json({
+          ok: true,
+          source: null,
+          noSource: true,
+          error: "No download found for this title.",
+        });
+      }
+      return res.status(200).json({
+        ok: true,
+        source: "moviesmod",
+        qualities,
       });
     }
 
