@@ -132,7 +132,26 @@
 // Returned URLs are time-limited and only ever sent to the user's own
 // browser.
 
-import { MODLIST_INDEX } from "./modlist-index.js";
+// The catalogue is split into ~550KB chunks (api/modlist-index-N.js)
+// because a single 5MB file exceeds the push tool's request size.
+// The resolver imports the chunks DIRECTLY (not via a loader) so
+// Vercel's bundler traces them from this entry file.
+import { MODLIST_INDEX_1 } from "./modlist-index-1.js";
+import { MODLIST_INDEX_2 } from "./modlist-index-2.js";
+import { MODLIST_INDEX_3 } from "./modlist-index-3.js";
+import { MODLIST_INDEX_4 } from "./modlist-index-4.js";
+import { MODLIST_INDEX_5 } from "./modlist-index-5.js";
+import { MODLIST_INDEX_6 } from "./modlist-index-6.js";
+import { MODLIST_INDEX_7 } from "./modlist-index-7.js";
+const MODLIST_INDEX = [
+  ...MODLIST_INDEX_1,
+  ...MODLIST_INDEX_2,
+  ...MODLIST_INDEX_3,
+  ...MODLIST_INDEX_4,
+  ...MODLIST_INDEX_5,
+  ...MODLIST_INDEX_6,
+  ...MODLIST_INDEX_7,
+];
 
 const NET52_BASES = [
   "https://net52.cc/pv",

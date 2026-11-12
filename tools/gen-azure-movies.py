@@ -99,11 +99,13 @@ def main():
     assert lines[2].startswith("// Deploy as api/resolve-movie.js"), lines[2]
     out = AZURE_HEADER + "\n".join(lines[2:])
 
-    # 2. ESM import of the index -> require(). The resolver only
-    #    imports the index module now (no fs/path/url imports).
-    out = out.replace(
-        'import { MODLIST_INDEX } from "./modlist-index.js";',
-        'const { MODLIST_INDEX } = require("./modlist-index.js");',
+    # 2. ESM imports of the index chunks -> require(). The resolver
+    #    imports the chunks directly (no loader) so Vercel's bundler
+    #    traces them from the entry file.
+    out = re.sub(
+        r'import \{ (MODLIST_INDEX_\d+) \} from "\./(modlist-index-\d+\.js)";',
+        r'const { \1 } = require("./\2");',
+        out,
     )
     assert re.search(r"^import ", out, re.M) is None, "an import survived"
 
