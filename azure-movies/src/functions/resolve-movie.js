@@ -111,6 +111,10 @@
 //                            -> 200 the subtitle converted SRT -> VTT
 //                              (text/vtt, CORS *), so <track> can load it.
 //   MOVIESMOD DOWNLOAD (one-click download link):
+//   ?dq=<query>                -> 200 {"ok": true, "source": "moviesmod",
+//                               "items": [{title, year, slug, pageUrl}]}
+//                               (the Movies page search box searches
+//                               MoviesMod only — see below)
 //   ?dl=<title>&year=<year>&quality=<480p|720p|1080p>
 //                            -> 200 {"ok": true, "source": "moviesmod",
 //                               "downloadUrl": "<DriveSeed file page>",
@@ -803,6 +807,98 @@ function guessMoviesModSlug(title, year) {
   return tries;
 }
 
+// ---------- MoviesMod catalogue search (?dq=) ----------
+//
+// The Movies page search now searches MoviesMod only (the user's
+// request, 12 Nov 2026 — the old ?q= searched the streaming site).
+// Titles come from the sitemap index slugs: the slug is
+// "<title-words>-<year>-<lang>-<quality>..." (TV adds season info),
+// so the title is the words before the year token and the year is
+// the last 4-digit year-like token.
+const MOVIESMOD_STOP = new Set([
+  "hindi", "english", "dual", "audio", "multi", "korean", "chinese",
+  "japanese", "tamil", "telugu", "malayalam", "kannada", "bengali",
+  "punjabi", "marathi", "urdu", "thai", "french", "german", "italian",
+  "spanish", "portuguese", "russian", "turkish", "arabic", "persian",
+  "indonesian", "malay", "vietnamese", "filipino", "season",
+  "480p", "720p", "1080p", "2160p", "4k", "hevc", "10bit", "x264",
+  "x265", "web", "bluray", "hdrip", "hdcam", "esub", "uncut",
+  "extended", "directors", "cut",
+]);
+const SMALL_WORDS = new Set([
+  "of", "the", "a", "an", "and", "in", "on", "at", "to", "for", "with",
+]);
+
+function slugToMovie(slug) {
+  const parts = String(slug).split("-").filter(Boolean);
+  let yearIdx = -1;
+  let year = "";
+  for (let i = 0; i < parts.length; i++) {
+    if (/^(19|20)\d{2}$/.test(parts[i])) {
+      const y = parseInt(parts[i], 10);
+      if (y >= 1900 && y <= 2030) {
+        yearIdx = i;
+        year = parts[i];
+      }
+    }
+  }
+  let end = yearIdx >= 0 ? yearIdx : parts.length;
+  if (yearIdx < 0) {
+    for (let i = 0; i < parts.length; i++) {
+      if (MOVIESMOD_STOP.has(parts[i])) {
+        end = i;
+        break;
+      }
+    }
+  }
+  const words = parts.slice(0, end);
+  if (!words.length) return { title: "", year };
+  const title = words
+    .map((w, i) =>
+      i > 0 && SMALL_WORDS.has(w)
+        ? w
+        : w.charAt(0).toUpperCase() + w.slice(1)
+    )
+    .join(" ");
+  return { title, year };
+}
+
+function moviesModSearch(query) {
+  const words = normWords(query);
+  if (!words.length) return [];
+  const qNorm = words.join(" ");
+  const results = [];
+  const seen = new Set();
+  for (const slug of MOVIESMOD_SLUGS) {
+    const s = String(slug).toLowerCase();
+    if (!words.every((w) => s.includes(w))) continue;
+    const { title, year } = slugToMovie(slug);
+    if (!title) continue;
+    const key = title.toLowerCase() + "|" + year;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    results.push({
+      title,
+      year,
+      slug,
+      pageUrl: `${MOVIESMOD_BASE}/download-${slug}/`,
+    });
+    if (results.length >= 60) break;
+  }
+  // Relevance: exact title first, then title starts with the query,
+  // then newest year first.
+  results.sort((a, b) => {
+    const aExact = a.title.toLowerCase() === qNorm ? 0 : 1;
+    const bExact = b.title.toLowerCase() === qNorm ? 0 : 1;
+    if (aExact !== bExact) return aExact - bExact;
+    const aStart = a.title.toLowerCase().startsWith(qNorm) ? 0 : 1;
+    const bStart = b.title.toLowerCase().startsWith(qNorm) ? 0 : 1;
+    if (aStart !== bStart) return aStart - bStart;
+    return (parseInt(b.year, 10) || 0) - (parseInt(a.year, 10) || 0);
+  });
+  return results.slice(0, 40);
+}
+
 async function postForm(url, fields, timeoutMs = 12000) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -1310,6 +1406,19 @@ async function handleMovie(req, res) {
         kind: null,
         noSource: true,
         error: "No LokLok source found for this title.",
+      });
+    }
+
+    // --- MoviesMod catalogue search (the Movies page search box) ---
+    if (q.dq) {
+      const query = String(q.dq).trim();
+      if (query.length < 2) {
+        return res.status(400).json({ error: "Query too short" });
+      }
+      return res.status(200).json({
+        ok: true,
+        source: "moviesmod",
+        items: moviesModSearch(query),
       });
     }
 
