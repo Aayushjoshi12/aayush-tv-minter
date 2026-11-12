@@ -69,6 +69,15 @@ SITE_BASES = {
     "af": "https://animeflix.my",
 }
 
+# Slugs drop apostrophes and can repeat words — fix the known
+# titles (same map as the resolver's TITLE_FIXES in
+# api/resolve-movie.js).
+TITLE_FIXES = {
+    "wheres wanda": "Where's Wanda",
+    "the devils plan": "The Devil's Plan",
+    "the lord of the rings the rings of power": "The Lord of the Rings: The Rings of Power",
+}
+
 
 def slug_to_movie(slug):
     """Port of the resolver's slugToMovie: title, year, season.
@@ -103,6 +112,9 @@ def slug_to_movie(slug):
         else:
             titled.append(w[:1].upper() + w[1:])
     title = " ".join(titled)
+    # Slugs drop apostrophes and can repeat words — fix the known
+    # titles (same map as the resolver's TITLE_FIXES).
+    title = TITLE_FIXES.get(title.lower(), title)
     s = slug.lower()
     m = re.search(r"season-(\d{1,2})(?:-(\d{1,2}))?", s)
     if m:
@@ -187,7 +199,8 @@ def main():
     # by sitemap <lastmod>. A tiny static file the Movies home page
     # fetches directly (public/modlist-new.json) so new movies and
     # series appear on the home page without a search.
-    # Dedupe by title+year+site (one card per site per title).
+    # Dedupe by title+year (one card per title — the same title on
+    # two sites is the same title, not two cards).
     newest = sorted(
         ((lm, code, slug, poster) for (code, slug), (poster, lm) in entries.items() if lm),
         key=lambda t: t[0],
@@ -199,7 +212,7 @@ def main():
         info = slug_to_movie(slug)
         if not info["title"]:
             continue
-        key = (info["title"].lower(), info["year"], code)
+        key = (info["title"].lower(), info["year"])
         if key in seen_new:
             continue
         seen_new.add(key)

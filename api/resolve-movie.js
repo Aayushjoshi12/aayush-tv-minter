@@ -936,6 +936,20 @@ function slugLooksSeries(slug) {
   return true;
 }
 
+// Slugs drop apostrophes and can repeat words, so a few titles
+// come out wrong ("Wheres Wanda", "The Lord of the Rings the
+// Rings of Power"). Fix the known ones; everything else passes
+// through unchanged.
+const TITLE_FIXES = {
+  "wheres wanda": "Where's Wanda",
+  "the devils plan": "The Devil's Plan",
+  "the lord of the rings the rings of power": "The Lord of the Rings: The Rings of Power",
+};
+function fixTitle(title) {
+  const fixed = TITLE_FIXES[String(title || "").toLowerCase()];
+  return fixed || title;
+}
+
 function slugToMovie(slug) {
   const parts = String(slug).split("-").filter(Boolean);
   let yearIdx = -1;
@@ -967,13 +981,16 @@ function slugToMovie(slug) {
   // "Dark S01 S03 2017".
   const words = parts.slice(0, end).filter((w) => !/^s\d{1,2}$/i.test(w) && w.toLowerCase() !== "season");
   if (!words.length) return { title: "", year };
-  const title = words
+  let title = words
     .map((w, i) =>
       i > 0 && SMALL_WORDS.has(w)
         ? w
         : w.charAt(0).toUpperCase() + w.slice(1)
     )
     .join(" ");
+  // Slugs lose apostrophes and sometimes repeat words ("the Rings"
+  // twice in the Rings of Power slug). Fix the known titles.
+  title = fixTitle(title);
   // Series: keep the season in the title so "From Season 1-3"
   // does not look identical to a single-season "From".
   // e.g. "from-season-1-3-..." -> "From — Season 1-3",
