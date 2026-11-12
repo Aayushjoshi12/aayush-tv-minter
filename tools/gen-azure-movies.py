@@ -4,14 +4,14 @@ Vercel source (api/resolve-movie.js).
 
 Transformations (Vercel ESM -> Azure Functions v4 CommonJS):
   1. Swap the header comment for the Azure header.
-  2. Convert ESM imports (fs, path, fileURLToPath) to require() calls;
-     fileURLToPath(import.meta.url) becomes __dirname.
+  2. Convert the moviesmod-index ESM import to require().
   3. Swap the Vercel selfUrl for the Azure SELF_URL (set from the
      request origin at runtime, defaulting to the Function App URL).
   4. Rename `export default async function handler` to
      `async function handleMovie`.
   5. Append the app.http("resolve-movie") wrapper block.
-  6. Copy data-moviesmod-index.json into azure-movies/.
+  6. Copy api/moviesmod-index.js into azure-movies/src/functions/
+     (so the relative require() resolves next to the function).
 
 The Azure Function App is aayush-tv-movies (SEPARATE from the techjail
 minter aayush-tv-minter-kr — never deploy to that one).
@@ -25,8 +25,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "api" / "resolve-movie.js"
 DST = ROOT / "azure-movies" / "src" / "functions" / "resolve-movie.js"
-INDEX_SRC = ROOT / "data-moviesmod-index.json"
-INDEX_DST = ROOT / "azure-movies" / "data-moviesmod-index.json"
+INDEX_SRC = ROOT / "api" / "moviesmod-index.js"
+INDEX_DST = ROOT / "azure-movies" / "src" / "functions" / "moviesmod-index.js"
 
 AZURE_URL = (
     "https://aayush-tv-movies-geesc6d8g6fchvfk.koreacentral-01."
@@ -96,20 +96,12 @@ def main():
     assert lines[2].startswith("// Deploy as api/resolve-movie.js"), lines[2]
     out = AZURE_HEADER + "\n".join(lines[2:])
 
-    # 2. ESM imports -> require(). The file only imports fs/path/url.
+    # 2. ESM import of the index -> require(). The resolver only
+    #    imports the index module now (no fs/path/url imports).
     out = out.replace(
-        'import fs from "node:fs";', 'const fs = require("node:fs");'
+        'import { MOVIESMOD_SLUGS } from "./moviesmod-index.js";',
+        'const { MOVIESMOD_SLUGS } = require("./moviesmod-index.js");',
     )
-    out = out.replace(
-        'import path from "node:path";', 'const path = require("node:path");'
-    )
-    out = out.replace(
-        'import { fileURLToPath } from "node:url";\n', ""
-    )
-    out = out.replace(
-        "path.dirname(fileURLToPath(import.meta.url))", "__dirname"
-    )
-    assert "fileURLToPath(" not in out, "fileURLToPath survived the transform"
     assert re.search(r"^import ", out, re.M) is None, "an import survived"
 
     # 3. selfUrl swap.
@@ -132,12 +124,13 @@ def main():
     DST.write_text(out)
     print(f"wrote {DST} ({len(out)} bytes)")
 
-    # 6. Copy the MoviesMod index.
+    # 6. Copy the MoviesMod index module next to the Azure function
+    #    (so the relative require() resolves).
     if INDEX_SRC.exists():
         shutil.copy2(INDEX_SRC, INDEX_DST)
-        print(f"copied {INDEX_SRC.name} -> azure-movies/ ({INDEX_SRC.stat().st_size} bytes)")
+        print(f"copied {INDEX_SRC.name} -> azure-movies/src/functions/ ({INDEX_SRC.stat().st_size} bytes)")
     else:
-        print("WARNING: data-moviesmod-index.json not found, skipping")
+        print("WARNING: api/moviesmod-index.js not found, skipping")
 
 
 if __name__ == "__main__":

@@ -120,9 +120,7 @@
 // Returned URLs are time-limited and only ever sent to the user's own
 // browser.
 
-import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { MOVIESMOD_SLUGS } from "./moviesmod-index.js";
 
 const NET52_BASES = [
   "https://net52.cc/pv",
@@ -745,28 +743,10 @@ const MOVIESMOD_BASE = "https://moviesmod.tw";
 const MODPRO_BASE = "https://links.modpro.blog";
 const NAUKRI_BASE = "https://en.thenaukriadda.in";
 
-let MOVIESMOD_SLUGS = null;
 function loadMoviesModIndex() {
-  if (MOVIESMOD_SLUGS) return MOVIESMOD_SLUGS;
-  const candidates = [];
-  try {
-    const here = path.dirname(fileURLToPath(import.meta.url));
-    candidates.push(path.join(here, "..", "data-moviesmod-index.json"));
-    candidates.push(path.join(here, "..", "..", "data-moviesmod-index.json"));
-  } catch {
-    // import.meta unavailable (CommonJS build): fall through to cwd.
-  }
-  candidates.push(path.join(process.cwd(), "data-moviesmod-index.json"));
-  for (const p of candidates) {
-    try {
-      const raw = fs.readFileSync(p, "utf8");
-      MOVIESMOD_SLUGS = JSON.parse(raw);
-      return MOVIESMOD_SLUGS;
-    } catch {
-      // Try the next candidate path.
-    }
-  }
-  MOVIESMOD_SLUGS = [];
+  // Static import (api/moviesmod-index.js) so the bundler includes
+  // the 21,704 slugs with the function — no filesystem reads, which
+  // Vercel's bundler cannot trace reliably.
   return MOVIESMOD_SLUGS;
 }
 
