@@ -917,13 +917,19 @@ function moviesModSearch(query) {
     if (seen.has(key)) continue;
     seen.add(key);
     const site = MODLIST_SITES[e.site] || MODLIST_SITES.mm;
+    // Poster paths in the index are relative to
+    // <site>/wp-content/uploads/ (compressed to keep the 5MB index
+    // splittable for pushes); rebuild the full URL here.
+    const poster = e.p
+      ? `${site.base}/wp-content/uploads/${e.p}`
+      : "";
     results.push({
       title,
       year,
       slug: e.s,
       site: e.site,
       siteName: site.name,
-      poster: e.p || "",
+      poster,
       pageUrl: `${site.base}/download-${e.s}/`,
     });
     if (results.length >= 80) break;
