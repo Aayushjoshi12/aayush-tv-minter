@@ -2279,6 +2279,73 @@ export default async function handler(req, res) {
     }
   }
 
+  // --- TEMPORARY test: VidRift /api/source/ for an H.264 (hevc=0)
+  // provider. REMOVE after testing. Fetches the embed page for a
+  // fresh playbackToken, then calls /api/source/ for the given
+  // provider and returns the raw status + first 600 chars.
+  if (q.srctest) {
+    try {
+      const tmdbId = String(q.srctest).trim();
+      const provider = String(q.provider || "atlas").trim();
+      const type = q.type === "tv" ? "tv" : "movie";
+      const season = Math.max(1, parseInt(String(q.se || "1"), 10) || 1);
+      const episode = Math.max(1, parseInt(String(q.ep || "1"), 10) || 1);
+      if (!/^\d+$/.test(tmdbId)) {
+        return res.status(400).json({ error: "Bad TMDB id" });
+      }
+      const embedUrl =
+        type === "tv"
+          ? `https://embed.vidrift.net/embed/tv/${tmdbId}/${season}/${episode}`
+          : `https://embed.vidrift.net/embed/movie/${tmdbId}`;
+      const page = await fetchWithTimeout(
+        embedUrl,
+        { "User-Agent": UA, Referer: "https://aayushlife.live/" },
+        8000,
+        "no-cors"
+      );
+      if (!page.ok) return res.status(200).json({ test: "embed page failed", upstream: page.status });
+      const html = await page.text();
+      const m = /var embedMeta = (\{[\s\S]*?\});/.exec(html);
+      if (!m) return res.status(200).json({ test: "no embedMeta" });
+      let meta;
+      try {
+        meta = JSON.parse(m[1]);
+      } catch {
+        return res.status(200).json({ test: "embedMeta parse failed" });
+      }
+      const token = meta.playbackToken || "";
+      if (!token) return res.status(200).json({ test: "no token" });
+      const typePath =
+        type === "tv"
+          ? `tv/${tmdbId}/${season}/${episode}`
+          : `movie/${tmdbId}`;
+      const srcUrl =
+        `https://embed.vidrift.net/api/source/${typePath}` +
+        `?token=${encodeURIComponent(token)}` +
+        `&provider=${encodeURIComponent(provider)}` +
+        `&parent=aayushlife.live&hevc=0`;
+      const r = await fetchWithTimeout(
+        srcUrl,
+        {
+          "User-Agent": UA,
+          Referer: embedUrl,
+          "x-embed-parent": "https://aayushlife.live",
+        },
+        8000
+      );
+      const body = await r.text();
+      return res.status(200).json({
+        test: "source",
+        provider,
+        upstream: r.status,
+        ctype: r.headers.get("content-type") || "",
+        body: body.slice(0, 600),
+      });
+    } catch (e) {
+      return res.status(502).json({ test: "error", message: String(e && e.message ? e.message : e).slice(0, 120) });
+    }
+  }
+
   try {
     // --- net52 (primary) catalogue ---
     if (q.home) {
