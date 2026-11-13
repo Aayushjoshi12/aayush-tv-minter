@@ -858,6 +858,68 @@ async function findMoviesModSlug(title, year) {
   return e ? e.s : null;
 }
 
+// Words that carry no meaning for matching a page to a title.
+// Everything else in the (base) title must appear in the page
+// <title>, or the page is not the title it claims to be.
+const TITLE_STOPWORDS = new Set([
+  "the", "a", "an", "of", "and", "to", "in", "on", "for", "with",
+]);
+
+// A fetched movie/series page must actually be ABOUT the
+// requested title. Slugs go stale — a site renames a post, or a
+// sitemap entry points at a reused URL — and the server still
+// answers 200. "Campus Beats" once resolved to a Bandish Bandits
+// page (0 mentions of Campus Beats, 28 of Bandish Bandits) and
+// the resolver happily returned Bandish Bandits files as Campus
+// Beats downloads. Wrong files are worse than no files: reject
+// a page whose <title> does not contain the title's content
+// words, so the caller falls through to another site — or to
+// noSource — instead of serving the wrong show.
+function pageMatchesTitle(pageHtml, title) {
+  const base = String(title || "").split("—")[0].trim();
+  const words = normWords(base).filter(
+    (w) => w.length > 1 && !TITLE_STOPWORDS.has(w)
+  );
+  if (!words.length) return true;
+  const pageTitle = (pageHtml.match(/<title>([^<]*)<\/title>/) || [])[1] || "";
+  const have = new Set(normWords(pageTitle));
+  return words.every((w) => have.has(w));
+}
+
+// All network sites carrying a title, preferred site first.
+// Used for failover: when the tapped site's page is blocked
+// (MoviesMod is Cloudflare-hardened since 13 Nov 2026) or its
+// content does not match (stale slug), the same title is tried
+// on the other sites before giving up — one site going down
+// must not kill the download.
+async function sitesForTitle(title, year, preferSite, preferSlug) {
+  const out = [];
+  const seen = new Set();
+  const push = (site, slug) => {
+    if (!site || !slug) return;
+    const k = site + "|" + slug;
+    if (seen.has(k)) return;
+    seen.add(k);
+    out.push({ site, slug });
+  };
+  push(preferSite, preferSlug);
+  const entries = await loadMoviesModIndex().catch(() => []);
+  const words = normWords(String(title || "").split("—")[0]);
+  if (!words.length) return out;
+  for (const e of entries) {
+    if (year && !String(e.s).includes(String(year))) continue;
+    const s = String(e.s).toLowerCase();
+    if (!words.every((w) => s.includes(w))) continue;
+    // Same base title (parsed), not just the same words anywhere.
+    const parsed = slugToMovie(e.s);
+    const tw = normWords(String(parsed.title).split("—")[0]);
+    if (tw.length !== words.length) continue;
+    if (!tw.every((w, i) => w === words[i])) continue;
+    push(e.site, e.s);
+  }
+  return out.slice(0, 3);
+}
+
 function guessMoviesModSlug(title, year) {
   // Fallback when the index misses: try the most common slug shapes.
   // e.g. "Avengers Age of Ultron" (2015) ->
@@ -1237,6 +1299,9 @@ async function moviesModArchives(title, year, siteCode, slug) {
   } catch {
     return null;
   }
+  // The page must be about this title (see pageMatchesTitle) —
+  // a stale slug can 200-serve a different show entirely.
+  if (!pageMatchesTitle(pageHtml, title)) return null;
   // Quality hint from the movie page title (uhdmovies names its
   // qualities there, e.g. "1080p 10Bit || 2160p 4k").
   const pageTitle = (pageHtml.match(/<title>([^<]*)<\/title>/) || [])[1] || "";
@@ -1532,9 +1597,16 @@ function seriesVolume(title) {
 }
 
 // Season number from an archive title: "From S02 720p" -> 2,
-// "Got S01 Hindi 480p" -> 1, "#1 Happy Family USA S01" -> 1.
+// "Got S01 Hindi 480p" -> 1, "#1 Happy Family USA S01" -> 1,
+// and the spelled-out form MoviesLeech uses: "Campus Beats
+// (2024) (Season 2) Hindi 480p" -> 2. Without the spelled-out
+// form, every MoviesLeech series archive parsed as season-less
+// and the series filter dropped it.
 function seriesSeason(title) {
-  const m = /\bS(\d{1,2})\b/i.exec(String(title || ""));
+  const t = String(title || "");
+  let m = /\bS(\d{1,2})\b/i.exec(t);
+  if (m) return parseInt(m[1], 10);
+  m = /\bSeason\s*(\d{1,2})\b/i.exec(t);
   return m ? parseInt(m[1], 10) : null;
 }
 
@@ -1634,18 +1706,21 @@ async function seriesInfo(title, year, siteCode, slug) {
   } catch {
     return null;
   }
+  // The page must be about this title (see pageMatchesTitle).
+  if (!pageMatchesTitle(pageHtml, title)) return null;
+  // A series page lists its downloads as blog archives — but the
+  // host varies by site: episodes.*.blog (MoviesMod),
+  // leechpro.blog (MoviesLeech), links.*.blog (others). The old
+  // regex only matched episodes.*.blog, so every non-MoviesMod
+  // series returned noSource. Match ANY *.blog archive; the
+  // archive TITLE decides below whether it is series material.
   const blogLinks = [
     ...new Set(
       [...pageHtml.matchAll(
-        /https?:\/\/(episodes\.[a-z0-9.-]+\.blog)\/archives\/(\d+)/g
+        /https?:\/\/([a-z0-9.-]+\.blog)\/archives\/(\d+)/g
       )].map((m) => `${m[1]}|${m[2]}`)
     ),
   ];
-  // A series page lists its downloads on an episodes.*.blog host;
-  // a movie page uses links.*.blog instead. No episode links means
-  // this is not a series page — fail fast so the caller can try
-  // the movie path instead of waiting on every archive.
-  if (!blogLinks.length) return null;
   // Read every archive's title + sids in parallel.
   const fetched = (
     await Promise.all(
@@ -1657,12 +1732,17 @@ async function seriesInfo(title, year, siteCode, slug) {
       })
     )
   ).filter(Boolean);
-  if (!fetched.length) return null;
+  if (!fetched.length) return await seriesInfoFromDirectSids(pageHtml, pageUrl);
   // Group by season (from the archive title). Archives with no
   // season marker go to season 0 ("all seasons").
   const bySeason = new Map(); // season -> {packs: [], archives: []}
   for (const f of fetched) {
     const info = parseSeriesArchive(f.title);
+    // Movie-style quality archives ("720p") carry no season,
+    // episode, volume or pack marker — they are not series
+    // material. Dropping them keeps a movie page from ever
+    // looking like a series page now that any *.blog host matches.
+    if (info.season == null && info.ep == null && info.vol == null && !info.isPack) continue;
     const season = info.season != null ? info.season : 0;
     if (!bySeason.has(season)) bySeason.set(season, { packs: [], archives: [] });
     const g = bySeason.get(season);
@@ -1707,7 +1787,76 @@ async function seriesInfo(title, year, siteCode, slug) {
       })),
     });
   }
-  return { pageUrl, seasons };
+  if (seasons.length) return { pageUrl, seasons };
+  // No series archives survived (a movie page, or a page whose
+  // archives are all plain quality links) — try the direct-sid
+  // path before giving up.
+  return await seriesInfoFromDirectSids(pageHtml, pageUrl);
+}
+
+// Series pages with no blog archives (uhdmovies links its files
+// straight to thenaukriadda sids on the page): resolve the sids,
+// read season/episode from the file names, and report the seasons
+// found. The episodes themselves are resolved on demand by
+// ?season=, which uses the same direct-sid path — so this only
+// needs the season list.
+async function seriesInfoFromDirectSids(pageHtml, pageUrl) {
+  const sids = [
+    ...new Set(
+      [...pageHtml.matchAll(/en\.thenaukriadda\.in\/\?sid=([A-Za-z0-9+/=]+)/g)].map(
+        (m) => m[1]
+      )
+    ),
+  ];
+  if (!sids.length) return null;
+  const files = (
+    await mapLimit(sids, 10, (sid) =>
+      resolveOneSid(sid, { quality: "" }, pageUrl).catch(() => null)
+    )
+  ).filter(Boolean);
+  const seasons = new Set();
+  for (const f of files) {
+    const se = fileSeasonEpisode(f.filename);
+    if (se) seasons.add(se.season);
+  }
+  if (!seasons.size) return null;
+  return {
+    pageUrl,
+    seasons: [...seasons]
+      .sort((a, b) => a - b)
+      .map((season) => ({ season, packs: [], archives: [] })),
+  };
+}
+
+// One season's episodes from a direct-sid page (uhdmovies):
+// resolve the sids on the page, keep this season's files, and
+// return them as [{file, info}] with the episode read from the
+// file name — the same shape the blog path produces, so the
+// grouping in seasonEpisodes is shared.
+async function seasonEpisodesFromDirectSids(pageHtml, pageUrl, seasonNum) {
+  const sids = [
+    ...new Set(
+      [...pageHtml.matchAll(/en\.thenaukriadda\.in\/\?sid=([A-Za-z0-9+/=]+)/g)].map(
+        (m) => m[1]
+      )
+    ),
+  ];
+  if (!sids.length) return [];
+  const files = (
+    await mapLimit(sids, 10, (sid) =>
+      resolveOneSid(sid, { quality: "" }, pageUrl).catch(() => null)
+    )
+  ).filter(Boolean);
+  const out = [];
+  for (const file of files) {
+    const se = fileSeasonEpisode(file.filename);
+    if (!se || se.season !== seasonNum) continue;
+    out.push({
+      file,
+      info: { ep: se.ep, vol: null, quality: file.quality || "" },
+    });
+  }
+  return out;
 }
 
 // One season's episodes, resolved: for the requested season,
@@ -1729,54 +1878,64 @@ async function seasonEpisodes(title, year, siteCode, slug, seasonNum) {
   } catch {
     return null;
   }
+  // The page must be about this title (see pageMatchesTitle).
+  if (!pageMatchesTitle(pageHtml, title)) return null;
+  // Any *.blog host, not just episodes.*.blog (see seriesInfo).
   const blogLinks = [
     ...new Set(
       [...pageHtml.matchAll(
-        /https?:\/\/(episodes\.[a-z0-9.-]+\.blog)\/archives\/(\d+)/g
+        /https?:\/\/([a-z0-9.-]+\.blog)\/archives\/(\d+)/g
       )].map((m) => `${m[1]}|${m[2]}`)
     ),
   ];
-  // Same series-only rule as seriesInfo: a movie page uses
-  // links.*.blog, not episodes.*.blog.
-  if (!blogLinks.length) return null;
-  // Read every archive's title + sids in parallel, keep only this
-  // season's non-pack archives.
-  const fetched = (
-    await Promise.all(
-      blogLinks.map(async (link) => {
-        const [blogBase, archiveId] = link.split("|");
-        const got = await fetchBlogArchive(blogBase, archiveId);
-        if (!got) return null;
-        return { blogBase, archiveId, ...got };
-      })
-    )
-  ).filter(Boolean);
-  const mine = fetched.filter((f) => {
-    const info = parseSeriesArchive(f.title);
-    if (info.isPack) return false;
-    // Keep archives of this season, or archives with an episode
-    // number when the page has no season markers at all.
-    return info.season === seasonNum || (info.season == null && seasonNum === 0);
-  });
-  if (!mine.length) return null;
-  // Resolve each archive to ALL its files (parallel), keeping
-  // each file tied to its own archive's title so the unit is
-  // never guessed from a different archive. A series "Episode
-  // Links" archive holds a whole season's episodes in one
-  // quality (its sids are E01..E10, not mirrors), so every sid
-  // is resolved — resolving only the first sid showed just Ep 1.
-  const resolved = (
-    await Promise.all(
-      mine.map(async (f) => {
-        const info = parseSeriesArchive(f.title);
-        const files = await resolveSeriesArchiveAll(
-          { archiveId: f.archiveId, blogBase: f.blogBase, quality: info.quality, sids: f.sids },
-          pageUrl
-        ).catch(() => []);
-        return files.map((file) => ({ file, info }));
-      })
-    )
-  ).flat().filter(Boolean);
+  // Blog archives first; direct sids on the page (uhdmovies)
+  // second. Both produce the same [{file, info}] shape for the
+  // grouping below.
+  let resolved = [];
+  if (blogLinks.length) {
+    // Read every archive's title + sids in parallel, keep only this
+    // season's non-pack archives.
+    const fetched = (
+      await Promise.all(
+        blogLinks.map(async (link) => {
+          const [blogBase, archiveId] = link.split("|");
+          const got = await fetchBlogArchive(blogBase, archiveId);
+          if (!got) return null;
+          return { blogBase, archiveId, ...got };
+        })
+      )
+    ).filter(Boolean);
+    const mine = fetched.filter((f) => {
+      const info = parseSeriesArchive(f.title);
+      if (info.isPack) return false;
+      // Keep archives of this season, or archives with an episode
+      // number when the page has no season markers at all.
+      return info.season === seasonNum || (info.season == null && seasonNum === 0);
+    });
+    if (mine.length) {
+      // Resolve each archive to ALL its files (parallel), keeping
+      // each file tied to its own archive's title so the unit is
+      // never guessed from a different archive. A series "Episode
+      // Links" archive holds a whole season's episodes in one
+      // quality (its sids are E01..E10, not mirrors), so every sid
+      // is resolved — resolving only the first sid showed just Ep 1.
+      resolved = (
+        await Promise.all(
+          mine.map(async (f) => {
+            const info = parseSeriesArchive(f.title);
+            const files = await resolveSeriesArchiveAll(
+              { archiveId: f.archiveId, blogBase: f.blogBase, quality: info.quality, sids: f.sids },
+              pageUrl
+            ).catch(() => []);
+            return files.map((file) => ({ file, info }));
+          })
+        )
+      ).flat().filter(Boolean);
+    }
+  }
+  if (!resolved.length) {
+    resolved = await seasonEpisodesFromDirectSids(pageHtml, pageUrl, seasonNum);
+  }
   if (!resolved.length) return null;
   const unitMap = new Map(); // key -> {label, kind, files}
   for (const { file, info } of resolved) {
@@ -2193,9 +2352,17 @@ export default async function handler(req, res) {
       const year = String(q.year || "").trim();
       const siteCode = String(q.site || "").trim();
       const slug = String(q.slug || "").trim();
-      const info = await seriesInfo(title, year, siteCode, slug).catch(
-        () => null
-      );
+      // Try the tapped site first, then the same title on the
+      // other network sites (see sitesForTitle) — one site being
+      // down or serving the wrong page must not kill the download.
+      const candidates = await sitesForTitle(title, year, siteCode, slug);
+      const tries = candidates.length ? candidates : [{ site: siteCode, slug }];
+      let info = null;
+      for (const c of tries) {
+        info = await seriesInfo(title, year, c.site, c.slug).catch(() => null);
+        if (info && info.seasons.length) break;
+        info = null;
+      }
       if (!info || !info.seasons.length) {
         return res.status(200).json({
           ok: true,
@@ -2224,9 +2391,16 @@ export default async function handler(req, res) {
       const year = String(q.year || "").trim();
       const siteCode = String(q.site || "").trim();
       const slug = String(q.slug || "").trim();
-      const got = await seasonEpisodes(title, year, siteCode, slug, seasonNum).catch(
-        () => null
-      );
+      const candidates = await sitesForTitle(title, year, siteCode, slug);
+      const tries = candidates.length ? candidates : [{ site: siteCode, slug }];
+      let got = null;
+      for (const c of tries) {
+        got = await seasonEpisodes(title, year, c.site, c.slug, seasonNum).catch(
+          () => null
+        );
+        if (got && got.episodes.length) break;
+        got = null;
+      }
       if (!got || !got.episodes.length) {
         return res.status(200).json({
           ok: true,
@@ -2284,12 +2458,15 @@ export default async function handler(req, res) {
       // otherwise the title is looked up in the whole network index.
       const siteCode = String(q.site || "").trim();
       const slug = String(q.slug || "").trim();
-      const qualities = await moviesModAllQualities(
-        title,
-        year,
-        siteCode,
-        slug
-      ).catch(() => []);
+      const candidates = await sitesForTitle(title, year, siteCode, slug);
+      const tries = candidates.length ? candidates : [{ site: siteCode, slug }];
+      let qualities = [];
+      for (const c of tries) {
+        qualities = await moviesModAllQualities(title, year, c.site, c.slug).catch(
+          () => []
+        );
+        if (qualities.length) break;
+      }
       if (!qualities.length) {
         return res.status(200).json({
           ok: true,
@@ -2315,13 +2492,15 @@ export default async function handler(req, res) {
       if (title.length < 2) {
         return res.status(400).json({ error: "Title too short" });
       }
-      const dl = await moviesModDownload(
-        title,
-        year,
-        quality,
-        siteCode,
-        slug
-      ).catch(() => null);
+      const candidates = await sitesForTitle(title, year, siteCode, slug);
+      const tries = candidates.length ? candidates : [{ site: siteCode, slug }];
+      let dl = null;
+      for (const c of tries) {
+        dl = await moviesModDownload(title, year, quality, c.site, c.slug).catch(
+          () => null
+        );
+        if (dl) break;
+      }
       if (dl) {
         return res.status(200).json({
           ok: true,
