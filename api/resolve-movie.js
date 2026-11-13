@@ -181,12 +181,14 @@ const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
   "(KHTML, like Gecko) Chrome/126.0 Safari/537.36";
 
-function fetchWithTimeout(url, headers, timeoutMs) {
+function fetchWithTimeout(url, headers, timeoutMs, mode) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
-  return fetch(url, { headers, signal: controller.signal }).finally(() =>
-    clearTimeout(timer)
-  );
+  return fetch(url, {
+    headers,
+    signal: controller.signal,
+    ...(mode ? { mode } : {}),
+  }).finally(() => clearTimeout(timer));
 }
 
 const selfUrl = () =>
@@ -2009,6 +2011,57 @@ function srtToVtt(srt) {
   return "WEBVTT\n\n" + body + "\n";
 }
 
+// Rewrite a fetched manifest so the browser can play it: nested
+// .m3u8 links (variant + audio playlists) go back through this
+// resolver (they need a Referer the browser cannot send), while
+// segment names are made absolute against the manifest's own host
+// (the large segments still load straight from the CDN — only the
+// tiny manifests, a few KB each, pass through Vercel; no video
+// bandwidth). embedRef is the embed page URL whose Referer the
+// upstream requires (VidRift Orion); "" for the net52/CDN case,
+// where the Referer is fixed per host. Also strips the
+// non-standard TYPE attribute some CDNs inject into STREAM-INF
+// lines (an IPv6-like value that can trip strict parsers).
+function rewriteManifestText(text, target, embedRef) {
+  let clean = text.replace(
+    /^(#EXT-X-STREAM-INF:[^\n]*),TYPE=[^,\n]+/gm,
+    "$1"
+  );
+  const self = selfUrl();
+  const base = new URL(target);
+  const toProxy = (u) =>
+    `${self}?manifest=${encodeURIComponent(u)}` +
+    (embedRef ? `&ref=${encodeURIComponent(embedRef)}` : "");
+  const needsProxy = (u) =>
+    /^https:\/\/[a-z0-9.-]+\.(freecdn4\.top|nm-cdn2\.top)\/.+\.m3u8/.test(u) ||
+    (embedRef &&
+      /^https:\/\/embed\.vidrift\.net\/api\/orion\/.+\.m3u8/.test(u));
+  clean = clean
+    .split("\n")
+    .map((line) => {
+      const t = line.trim();
+      if (!t) return line;
+      // URI="..." attributes (EXT-X-MEDIA audio links, EXT-X-KEY).
+      if (t.startsWith("#") && t.includes('URI="')) {
+        return line.replace(/URI="([^"]+\.m3u8[^"]*)"/g, (m, u) => {
+          const abs = /^https?:\/\//.test(u) ? u : new URL(u, base).href;
+          return needsProxy(abs) ? `URI="${toProxy(abs)}"` : `URI="${abs}"`;
+        });
+      }
+      if (t.startsWith("#")) return line;
+      // Bare URI line: a variant manifest or a segment.
+      if (/\.m3u8(\?|$)/.test(t)) {
+        const abs = new URL(t, base).href;
+        return needsProxy(abs) ? toProxy(abs) : abs;
+      }
+      // A segment: make relative names absolute on the CDN host.
+      if (!/^https?:\/\//.test(t)) return new URL(t, base).href;
+      return line;
+    })
+    .join("\n");
+  return clean;
+}
+
 export default async function handler(req, res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET, OPTIONS");
@@ -2040,10 +2093,27 @@ export default async function handler(req, res) {
       const target = decodeURIComponent(q.manifest);
       const net52 = /^https:\/\/(net52\.cc|pcmirror\.cc)\/pv\/hls\/[A-Za-z0-9]+\.m3u8/.exec(target);
       const cdn = /^https:\/\/[a-z0-9.-]+\.(freecdn4\.top|nm-cdn2\.top)\/.+\.m3u8/.exec(target);
-      if (!net52 && !cdn) {
+      // VidRift Orion manifests: the Referer must be the embed page
+      // the manifest was baked for (?watch= passes it as &ref=).
+      const orion = /^https:\/\/embed\.vidrift\.net\/api\/orion\/[A-Za-z0-9]+\/.+\.m3u8/.exec(target);
+      const embedRef =
+        orion &&
+        /^https:\/\/embed\.vidrift\.net\/embed\/(movie\/\d+|tv\/\d+\/\d+\/\d+)$/.test(
+          String(q.ref || "")
+        )
+          ? String(q.ref)
+          : "";
+      if (!net52 && !cdn && !orion) {
         return res.status(400).json({ error: "Bad manifest URL" });
       }
-      const referer = net52 ? `https://${net52[1]}/pv/` : "https://net52.cc/pv/";
+      if (orion && !embedRef) {
+        return res.status(400).json({ error: "Missing embed referer" });
+      }
+      const referer = orion
+        ? embedRef
+        : net52
+          ? `https://${net52[1]}/pv/`
+          : "https://net52.cc/pv/";
       const r = await fetchWithTimeout(
         target,
         { "User-Agent": UA, Referer: referer },
@@ -2058,48 +2128,10 @@ export default async function handler(req, res) {
       if (!text.startsWith("#EXTM3U")) {
         return res.status(502).json({ error: "Not a manifest" });
       }
-      // Sanitize: the CDN injects a non-standard TYPE attribute into
-      // STREAM-INF lines (e.g. TYPE=2606:54c1:1:9ba::62:108 — an
-      // IPv6-like value). It is not part of HLS and can trip strict
-      // playlist parsers, so strip it before serving.
-      let clean = text.replace(
-        /^(#EXT-X-STREAM-INF:[^\n]*),TYPE=[^,\n]+/gm,
-        "$1"
-      );
-      // Rewrite URIs. Nested .m3u8 links (variant + audio manifests)
-      // go through this proxy; segment names are made absolute
-      // against the manifest's own host so they load from the CDN.
-      const self = selfUrl();
-      const base = new URL(target);
-      const toProxy = (u) =>
-        `${self}?manifest=${encodeURIComponent(u)}`;
-      const isCdnM3u8 = (u) =>
-        /^https:\/\/[a-z0-9.-]+\.(freecdn4\.top|nm-cdn2\.top)\/.+\.m3u8/.test(u);
-      clean = clean
-        .split("\n")
-        .map((line) => {
-          const t = line.trim();
-          if (!t) return line;
-          // URI="..." attributes (EXT-X-MEDIA audio links, EXT-X-KEY).
-          if (t.startsWith("#") && t.includes('URI="')) {
-            return line.replace(
-              /URI="(https:[^"]+\.m3u8[^"]*)"/g,
-              (m, u) => (isCdnM3u8(u) ? `URI="${toProxy(u)}"` : m)
-            );
-          }
-          if (t.startsWith("#")) return line;
-          // Bare URI line: a variant manifest or a segment.
-          if (/\.m3u8(\?|$)/.test(t)) {
-            const abs = new URL(t, base).href;
-            return isCdnM3u8(abs) ? toProxy(abs) : abs;
-          }
-          // A segment: make relative names absolute on the CDN host.
-          if (!/^https?:\/\//.test(t)) return new URL(t, base).href;
-          return line;
-        })
-        .join("\n");
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-      return res.status(200).send(clean);
+      return res
+        .status(200)
+        .send(rewriteManifestText(text, target, embedRef));
     } catch {
       return res.status(502).json({ error: "Manifest fetch failed" });
     }
@@ -2124,6 +2156,80 @@ export default async function handler(req, res) {
       return res.status(200).send(srtToVtt(srt));
     } catch {
       return res.status(502).json({ error: "Subtitle fetch failed" });
+    }
+  }
+
+  // --- Direct Watch (VidRift Orion): the embed page bakes its own
+  // "Orion" copy of the title as a direct .m3u8 (no ad script, no
+  // popup gate). Fetch the embed page, take the Original stream,
+  // fetch its master manifest with the embed page as Referer (the
+  // /api/orion/ endpoint 403s any other Referer), and serve the
+  // rewritten master: variant/audio playlists go back through
+  // ?manifest= (same Referer gate), segments are absolute
+  // CloudFront URLs that load straight from the CDN. Only playlist
+  // text passes through Vercel; no video bandwidth. Returns
+  // { noSource: true } when the title has no Orion copy, so the
+  // page falls back to the embed players.
+  if (q.watch) {
+    try {
+      const tmdbId = String(q.watch).trim();
+      const type = q.type === "tv" ? "tv" : "movie";
+      const season = Math.max(1, parseInt(String(q.se || "1"), 10) || 1);
+      const episode = Math.max(1, parseInt(String(q.ep || "1"), 10) || 1);
+      if (!/^\d+$/.test(tmdbId)) {
+        return res.status(400).json({ error: "Bad TMDB id" });
+      }
+      const embedUrl =
+        type === "tv"
+          ? `https://embed.vidrift.net/embed/tv/${tmdbId}/${season}/${episode}`
+          : `https://embed.vidrift.net/embed/movie/${tmdbId}`;
+      const page = await fetchWithTimeout(
+        embedUrl,
+        { "User-Agent": UA, Referer: "https://aayushlife.live/" },
+        15000,
+        // VidRift's embed page 403s script fetches ("Embed this page
+        // in an iframe"): undici sends sec-fetch-mode: cors, which
+        // the page rejects. mode "no-cors" gets the page (200).
+        "no-cors"
+      );
+      if (!page.ok) {
+        return res.status(200).json({ noSource: true });
+      }
+      const html = await page.text();
+      const m = /var embedMeta = (\{[\s\S]*?\});/.exec(html);
+      if (!m) return res.status(200).json({ noSource: true });
+      let meta;
+      try {
+        meta = JSON.parse(m[1]);
+      } catch {
+        return res.status(200).json({ noSource: true });
+      }
+      const streams = Array.isArray(meta.orionStreams)
+        ? meta.orionStreams
+        : [];
+      const stream =
+        streams.find((s) => /original/i.test(String(s.name || ""))) ||
+        streams[0];
+      if (!stream || !stream.url) {
+        return res.status(200).json({ noSource: true });
+      }
+      const manifestUrl = "https://embed.vidrift.net" + stream.url;
+      const r = await fetchWithTimeout(
+        manifestUrl,
+        { "User-Agent": UA, Referer: embedUrl },
+        12000
+      );
+      if (!r.ok) return res.status(200).json({ noSource: true });
+      const text = await r.text();
+      if (!text.startsWith("#EXTM3U")) {
+        return res.status(200).json({ noSource: true });
+      }
+      res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+      return res
+        .status(200)
+        .send(rewriteManifestText(text, manifestUrl, embedUrl));
+    } catch {
+      return res.status(502).json({ error: "Watch resolve failed" });
     }
   }
 
