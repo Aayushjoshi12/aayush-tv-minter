@@ -194,6 +194,32 @@ function fetchWithTimeout(url, headers, timeoutMs, mode) {
 const selfUrl = () =>
   "https://aayush-tv-minter.vercel.app/api/resolve-movie";
 
+// Direct Watch cache: the Orion hash + master manifest are stable
+// per title, so cache the rewritten master per (tmdbId, type,
+// season, episode) and skip the embed-page fetch on repeat taps.
+// The master itself has no expiry (its variant URLs are stable
+// Orion paths); the variant playlists are still fetched fresh via
+// ?manifest= (their segment URLs are signed and expire).
+const WATCH_MASTER_CACHE = new Map();
+const WATCH_MASTER_TTL_MS = 6 * 60 * 60 * 1000;
+const WATCH_MASTER_MAX = 100;
+function watchCacheGet(key) {
+  const hit = WATCH_MASTER_CACHE.get(key);
+  if (!hit) return null;
+  if (Date.now() - hit.at > WATCH_MASTER_TTL_MS) {
+    WATCH_MASTER_CACHE.delete(key);
+    return null;
+  }
+  return hit.text;
+}
+function watchCacheSet(key, text) {
+  if (WATCH_MASTER_CACHE.size >= WATCH_MASTER_MAX) {
+    const first = WATCH_MASTER_CACHE.keys().next().value;
+    if (first) WATCH_MASTER_CACHE.delete(first);
+  }
+  WATCH_MASTER_CACHE.set(key, { at: Date.now(), text });
+}
+
 // ---------- net52 (primary) ----------
 
 async function net52Get(path) {
@@ -2117,7 +2143,7 @@ export default async function handler(req, res) {
       const r = await fetchWithTimeout(
         target,
         { "User-Agent": UA, Referer: referer },
-        12000
+        8000
       );
       if (!r.ok) {
         return res
@@ -2162,14 +2188,17 @@ export default async function handler(req, res) {
   // --- Direct Watch (VidRift Orion): the embed page bakes its own
   // "Orion" copy of the title as a direct .m3u8 (no ad script, no
   // popup gate). Fetch the embed page, take the Original stream,
-  // fetch its master manifest with the embed page as Referer (the
-  // /api/orion/ endpoint 403s any other Referer), and serve the
-  // rewritten master: variant/audio playlists go back through
-  // ?manifest= (same Referer gate), segments are absolute
-  // CloudFront URLs that load straight from the CDN. Only playlist
-  // text passes through Vercel; no video bandwidth. Returns
-  // { noSource: true } when the title has no Orion copy, so the
-  // page falls back to the embed players.
+  // and serve its master manifest — preferably straight from the
+  // page's baked warmManifests (no second upstream fetch), else by
+  // fetching the master from /api/orion/ with the embed page as
+  // Referer (that endpoint 403s any other Referer). The rewritten
+  // master sends variant/audio playlists back through ?manifest=
+  // (same Referer gate); segments are absolute CloudFront URLs that
+  // load straight from the CDN. Only playlist text passes through
+  // Vercel; no video bandwidth. The rewritten master is cached per
+  // title (the Orion hash is stable), so repeat taps return at
+  // once. Returns { noSource: true } when the title has no Orion
+  // copy, so the page falls back to the embed players.
   if (q.watch) {
     try {
       const tmdbId = String(q.watch).trim();
@@ -2179,6 +2208,12 @@ export default async function handler(req, res) {
       if (!/^\d+$/.test(tmdbId)) {
         return res.status(400).json({ error: "Bad TMDB id" });
       }
+      const cacheKey = [tmdbId, type, season, episode].join("|");
+      const cached = watchCacheGet(cacheKey);
+      if (cached) {
+        res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+        return res.status(200).send(cached);
+      }
       const embedUrl =
         type === "tv"
           ? `https://embed.vidrift.net/embed/tv/${tmdbId}/${season}/${episode}`
@@ -2186,7 +2221,7 @@ export default async function handler(req, res) {
       const page = await fetchWithTimeout(
         embedUrl,
         { "User-Agent": UA, Referer: "https://aayushlife.live/" },
-        15000,
+        8000,
         // VidRift's embed page 403s script fetches ("Embed this page
         // in an iframe"): undici sends sec-fetch-mode: cors, which
         // the page rejects. mode "no-cors" gets the page (200).
@@ -2214,20 +2249,31 @@ export default async function handler(req, res) {
         return res.status(200).json({ noSource: true });
       }
       const manifestUrl = "https://embed.vidrift.net" + stream.url;
-      const r = await fetchWithTimeout(
-        manifestUrl,
-        { "User-Agent": UA, Referer: embedUrl },
-        12000
-      );
-      if (!r.ok) return res.status(200).json({ noSource: true });
-      const text = await r.text();
-      if (!text.startsWith("#EXTM3U")) {
-        return res.status(200).json({ noSource: true });
+      // The page bakes the master manifest itself (warmManifests);
+      // use it directly and skip the /api/orion/ fetch.
+      let text = "";
+      const warm =
+        meta.warmManifests && typeof meta.warmManifests === "object"
+          ? meta.warmManifests[stream.url]
+          : null;
+      if (typeof warm === "string" && warm.startsWith("#EXTM3U")) {
+        text = warm;
+      } else {
+        const r = await fetchWithTimeout(
+          manifestUrl,
+          { "User-Agent": UA, Referer: embedUrl },
+          8000
+        );
+        if (!r.ok) return res.status(200).json({ noSource: true });
+        text = await r.text();
+        if (!text.startsWith("#EXTM3U")) {
+          return res.status(200).json({ noSource: true });
+        }
       }
+      const clean = rewriteManifestText(text, manifestUrl, embedUrl);
+      watchCacheSet(cacheKey, clean);
       res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
-      return res
-        .status(200)
-        .send(rewriteManifestText(text, manifestUrl, embedUrl));
+      return res.status(200).send(clean);
     } catch {
       return res.status(502).json({ error: "Watch resolve failed" });
     }
