@@ -2334,12 +2334,23 @@ export default async function handler(req, res) {
         8000
       );
       const body = await r.text();
+      let streams = null;
+      try {
+        const j = JSON.parse(body);
+        streams = (Array.isArray(j.streams) ? j.streams : []).map((s) => ({
+          index: s.index,
+          quality: s.quality || s.label || null,
+          url: s.url || "",
+          proxyUrl: s.proxyUrl || "",
+        }));
+      } catch {
+        streams = body.slice(0, 600);
+      }
       return res.status(200).json({
         test: "source",
         provider,
         upstream: r.status,
-        ctype: r.headers.get("content-type") || "",
-        body: body.slice(0, 600),
+        streams,
       });
     } catch (e) {
       return res.status(502).json({ test: "error", message: String(e && e.message ? e.message : e).slice(0, 120) });
