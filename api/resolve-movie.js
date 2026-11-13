@@ -2185,30 +2185,36 @@ export default async function handler(req, res) {
     }
   }
 
-  // --- Direct Watch (VidRift Orion): the embed page bakes its own
-  // "Orion" copy of the title as a direct .m3u8 (no ad script, no
-  // popup gate). Fetch the embed page, take the Original stream,
-  // and serve its master manifest — preferably straight from the
-  // page's baked warmManifests (no second upstream fetch), else by
-  // fetching the master from /api/orion/ with the embed page as
-  // Referer (that endpoint 403s any other Referer). The rewritten
-  // master sends variant/audio playlists back through ?manifest=
-  // (same Referer gate); segments are absolute CloudFront URLs that
-  // load straight from the CDN. Only playlist text passes through
-  // Vercel; no video bandwidth. The rewritten master is cached per
-  // title (the Orion hash is stable), so repeat taps return at
-  // once. Returns { noSource: true } when the title has no Orion
-  // copy, so the page falls back to the embed players.
+  // --- Direct Watch: a native, ad-free stream for the site's own
+  // player. Two paths, chosen by the page's &hevc= flag (the page
+  // reports whether the browser can decode HEVC):
+  //  * hevc=0 (H.264 — plays everywhere, incl. Chrome on Windows
+  //    without the HEVC extension): VidRift's Titan provider via
+  //    /api/source/ (hevc=0). Its stream is a direct signed .m3u8
+  //    (img1.hscow.com, H.264+AAC, CORS *, no Referer gate) — the
+  //    resolver fetches the manifest and hands the text to the page.
+  //  * hevc=1 (HEVC-capable browsers): VidRift's own "Orion" copy,
+  //    baked into the embed page (1080p HEVC). The master comes from
+  //    the page's warmManifests (no second upstream fetch); variant
+  //    / audio playlists go back through ?manifest= (same Referer
+  //    gate); segments are absolute CloudFront URLs. Only playlist
+  //    text passes through Vercel; no video bandwidth. The rewritten
+  //    master is cached per title (the Orion hash is stable), so
+  //    repeat taps return at once. If Titan has no stream, the
+  //    resolver falls through to Orion. Returns { noSource: true }
+  //    when neither path has a copy, so the page falls back to the
+  //    embed players.
   if (q.watch) {
     try {
       const tmdbId = String(q.watch).trim();
       const type = q.type === "tv" ? "tv" : "movie";
       const season = Math.max(1, parseInt(String(q.se || "1"), 10) || 1);
       const episode = Math.max(1, parseInt(String(q.ep || "1"), 10) || 1);
+      const hevc = String(q.hevc || "0") === "1";
       if (!/^\d+$/.test(tmdbId)) {
         return res.status(400).json({ error: "Bad TMDB id" });
       }
-      const cacheKey = [tmdbId, type, season, episode].join("|");
+      const cacheKey = [tmdbId, type, season, episode, hevc ? "hevc" : "h264"].join("|");
       const cached = watchCacheGet(cacheKey);
       if (cached) {
         res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
@@ -2239,6 +2245,64 @@ export default async function handler(req, res) {
       } catch {
         return res.status(200).json({ noSource: true });
       }
+      const typePath =
+        type === "tv"
+          ? `tv/${tmdbId}/${season}/${episode}`
+          : `movie/${tmdbId}`;
+      // H.264 path (Titan): a direct signed .m3u8, no Referer gate,
+      // CORS * — the resolver fetches the manifest text and hands it
+      // to the page (its segment URLs are already absolute).
+      if (!hevc) {
+        const token = meta.playbackToken || "";
+        if (token) {
+          try {
+            const srcUrl =
+              `https://embed.vidrift.net/api/source/${typePath}` +
+              `?token=${encodeURIComponent(token)}` +
+              `&provider=titan&parent=aayushlife.live&hevc=0`;
+            const sr = await fetchWithTimeout(
+              srcUrl,
+              {
+                "User-Agent": UA,
+                Referer: embedUrl,
+                "x-embed-parent": "https://aayushlife.live",
+              },
+              8000
+            );
+            if (sr.ok) {
+              const sj = await sr.json().catch(() => null);
+              const sstreams =
+                sj && Array.isArray(sj.streams) ? sj.streams : [];
+              const surl =
+                (sstreams[0] && sstreams[0].url) ||
+                (sstreams[1] && sstreams[1].url) ||
+                "";
+              if (surl) {
+                const mr = await fetchWithTimeout(
+                  surl,
+                  { "User-Agent": UA, Referer: embedUrl },
+                  8000
+                );
+                if (mr.ok) {
+                  const mtext = await mr.text();
+                  if (mtext.startsWith("#EXTM3U")) {
+                    watchCacheSet(cacheKey, mtext);
+                    res.setHeader(
+                      "Content-Type",
+                      "application/vnd.apple.mpegurl"
+                    );
+                    return res.status(200).send(mtext);
+                  }
+                }
+              }
+            }
+          } catch {
+            // fall through to the Orion path below
+          }
+        }
+      }
+      // Orion path (HEVC, or Titan fallback): the embed page bakes
+      // its own "Orion" copy; the master comes from warmManifests.
       const streams = Array.isArray(meta.orionStreams)
         ? meta.orionStreams
         : [];
@@ -2276,84 +2340,6 @@ export default async function handler(req, res) {
       return res.status(200).send(clean);
     } catch {
       return res.status(502).json({ error: "Watch resolve failed" });
-    }
-  }
-
-  // --- TEMPORARY test: VidRift /api/source/ for an H.264 (hevc=0)
-  // provider. REMOVE after testing. Fetches the embed page for a
-  // fresh playbackToken, then calls /api/source/ for the given
-  // provider and returns the raw status + first 600 chars.
-  if (q.srctest) {
-    try {
-      const tmdbId = String(q.srctest).trim();
-      const provider = String(q.provider || "atlas").trim();
-      const type = q.type === "tv" ? "tv" : "movie";
-      const season = Math.max(1, parseInt(String(q.se || "1"), 10) || 1);
-      const episode = Math.max(1, parseInt(String(q.ep || "1"), 10) || 1);
-      if (!/^\d+$/.test(tmdbId)) {
-        return res.status(400).json({ error: "Bad TMDB id" });
-      }
-      const embedUrl =
-        type === "tv"
-          ? `https://embed.vidrift.net/embed/tv/${tmdbId}/${season}/${episode}`
-          : `https://embed.vidrift.net/embed/movie/${tmdbId}`;
-      const page = await fetchWithTimeout(
-        embedUrl,
-        { "User-Agent": UA, Referer: "https://aayushlife.live/" },
-        8000,
-        "no-cors"
-      );
-      if (!page.ok) return res.status(200).json({ test: "embed page failed", upstream: page.status });
-      const html = await page.text();
-      const m = /var embedMeta = (\{[\s\S]*?\});/.exec(html);
-      if (!m) return res.status(200).json({ test: "no embedMeta" });
-      let meta;
-      try {
-        meta = JSON.parse(m[1]);
-      } catch {
-        return res.status(200).json({ test: "embedMeta parse failed" });
-      }
-      const token = meta.playbackToken || "";
-      if (!token) return res.status(200).json({ test: "no token" });
-      const typePath =
-        type === "tv"
-          ? `tv/${tmdbId}/${season}/${episode}`
-          : `movie/${tmdbId}`;
-      const srcUrl =
-        `https://embed.vidrift.net/api/source/${typePath}` +
-        `?token=${encodeURIComponent(token)}` +
-        `&provider=${encodeURIComponent(provider)}` +
-        `&parent=aayushlife.live&hevc=0`;
-      const r = await fetchWithTimeout(
-        srcUrl,
-        {
-          "User-Agent": UA,
-          Referer: embedUrl,
-          "x-embed-parent": "https://aayushlife.live",
-        },
-        8000
-      );
-      const body = await r.text();
-      let streams = null;
-      try {
-        const j = JSON.parse(body);
-        streams = (Array.isArray(j.streams) ? j.streams : []).map((s) => ({
-          index: s.index,
-          quality: s.quality || s.label || null,
-          url: s.url || "",
-          proxyUrl: s.proxyUrl || "",
-        }));
-      } catch {
-        streams = body.slice(0, 600);
-      }
-      return res.status(200).json({
-        test: "source",
-        provider,
-        upstream: r.status,
-        streams,
-      });
-    } catch (e) {
-      return res.status(502).json({ test: "error", message: String(e && e.message ? e.message : e).slice(0, 120) });
     }
   }
 
