@@ -19,7 +19,13 @@
 // with CORS * — the same manifest-rewriter pattern the Movies
 // resolver already uses for net52 and VidRift. Only playlist TEXT
 // passes through here; the .ts segments are fetched by the browser
-// directly from zoloj.
+// directly from the broadcaster's own CDN (Hotstar), NOT through
+// this function and NOT through zoloj's segment proxy. The
+// manifest's segment lines are zoloj /seg proxy URLs; this
+// function rewrites them to the real CDN address hidden in the
+// proxy's `u` parameter, because that CDN sends
+// Access-Control-Allow-Origin: * while the proxy sends none
+// (and rejects any address but the session's).
 //
 // If the .m3u8 cannot be fetched from Vercel (403), this returns a
 // JSON diagnostic instead of a playlist, so the site can fall back
@@ -57,8 +63,26 @@ function rewriteManifest(text, base) {
       }
       if (t.startsWith("#")) return line;
       // A playlist/segment URI: make relative ones absolute.
-      if (/^https?:\/\//i.test(t)) return line;
-      return new URL(t, base).toString();
+      let url = t;
+      if (!/^https?:\/\//i.test(url)) url = new URL(url, base).toString();
+      // zoloj serves its segments through a /seg proxy that is
+      // tied to the session (a different address gets 403), and
+      // it sends no CORS header — so a browser on another site
+      // cannot fetch them. The proxy's `u` parameter is the real
+      // segment on the broadcaster's own CDN (Hotstar), which DOES
+      // send Access-Control-Allow-Origin: *. Point the player
+      // straight at that address instead of the proxy.
+      try {
+        const u = new URL(url);
+        if (
+          u.hostname === "stream2.zoloj.com" &&
+          u.pathname === "/seg" &&
+          u.searchParams.get("u")
+        ) {
+          return u.searchParams.get("u");
+        }
+      } catch {}
+      return url;
     })
     .join("\n");
 }
