@@ -48,7 +48,8 @@ async function fetchText(url, ms) {
   }
 }
 
-// Parse a master playlist: return [{ bandwidth, url }, ...].
+// Parse a master playlist: return [{ bandwidth, resolution, url }, ...].
+// resolution is like "1920x1080" when the master lists it.
 function parseVariants(text, base) {
   const lines = text.split(/\r?\n/);
   const out = [];
@@ -56,12 +57,13 @@ function parseVariants(text, base) {
     const t = lines[i].trim();
     if (!t.startsWith("#EXT-X-STREAM-INF")) continue;
     const bw = parseInt((t.match(/BANDWIDTH=(\d+)/) || [])[1] || "0", 10);
+    const res = (t.match(/RESOLUTION=(\d+x\d+)/) || [])[1] || "";
     const next = (lines[i + 1] || "").trim();
     if (!next || next.startsWith("#")) continue;
     const url = /^https?:\/\//i.test(next)
       ? next
       : new URL(next, base).toString();
-    out.push({ bandwidth: bw, url });
+    out.push({ bandwidth: bw, resolution: res, url });
   }
   return out;
 }
@@ -107,14 +109,21 @@ export default async function handler(req, res) {
   // Best (highest-bandwidth) variant.
   variants.sort((a, b) => b.bandwidth - a.bandwidth);
   const best = variants[0];
+  // The full list (best first) so the site can offer a quality
+  // menu — the player itself only gets one variant at a time.
+  const list = variants.map((v) => ({
+    url: v.url,
+    bandwidth: v.bandwidth,
+    resolution: v.resolution,
+  }));
   if (debug) {
     json(res, 200, {
       masterStatus: 200,
       variant: best.url,
-      variants: variants.length,
+      variants: list,
       bandwidth: best.bandwidth,
     });
     return;
   }
-  json(res, 200, { variant: best.url });
+  json(res, 200, { variant: best.url, variants: list });
 }
