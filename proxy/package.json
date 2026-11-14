@@ -1,0 +1,1 @@
+{"description":"Bigg Boss 24/7 HLS proxy (India) for Aayush TV","license":"MIT","main":"server.js","name":"aayush-bb-proxy","scripts":{"start":"node server.js"},"version":"1.0.0"}
