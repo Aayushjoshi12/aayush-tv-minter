@@ -150,6 +150,28 @@ function statusOf(scores) {
   return { status: scores.currentPeriodName || "?", minute };
 }
 
+// 1xBet live cricket: the score (with wickets) and the overs live
+// in scores.extendedScore — wicketScore "80/0", innsStats.overStr
+// "5.1". chronoLine is empty for cricket, so this object is the
+// ONLY 1xBet source for a live cricket score. The overs are
+// cricket's timer on 1xBet (no ticking seconds clock like football).
+function cricketLive(scores) {
+  const ext = scores && scores.extendedScore;
+  const wk = ext && ext.cricketScore && ext.cricketScore.wicketScore;
+  if (!wk || wk.opponent1 === undefined || wk.opponent2 === undefined) return null;
+  const inns = ext.innsStats || {};
+  return {
+    home: String(wk.opponent1),
+    away: String(wk.opponent2),
+    clock: inns.overStr ? String(inns.overStr) + " ov" : null,
+  };
+}
+
+function teamKey(home, away) {
+  const norm = (v) => String(v || "").toLowerCase().replace(/[^a-z]/g, "");
+  return norm(home) + "|" + norm(away);
+}
+
 function normalizeFeatured(g) {
   const o1 = g.opponent1 || {};
   const o2 = g.opponent2 || {};
@@ -161,16 +183,17 @@ function normalizeFeatured(g) {
   const { status, minute } = statusOf(scores);
   const hs = scores.scoreOpp1;
   const as = scores.scoreOpp2;
+  const ck = cricketLive(scores);
   return {
     id: String(id),
     league: (g.liga && g.liga.name) || "Unknown",
     home,
     away,
-    homeScore: typeof hs === "number" ? hs : null,
-    awayScore: typeof as === "number" ? as : null,
+    homeScore: ck ? ck.home : (typeof hs === "number" ? hs : null),
+    awayScore: ck ? ck.away : (typeof as === "number" ? as : null),
     status,
     minute,
-    clock: scores.statusLineStr || "",
+    clock: (ck && ck.clock) || scores.statusLineStr || "",
     startTs: typeof g.startTs === "number" ? g.startTs : null,
     format: "",
     timerSec: (scores.timer && typeof scores.timer.timeSec === "number") ? scores.timer.timeSec : null,
@@ -206,7 +229,7 @@ function findNplGames(menu) {
   return null;
 }
 
-function normalizeNpl(g, liveById) {
+function normalizeNpl(g, liveById, liveByName) {
   const o1 = g.opponent1 || {};
   const o2 = g.opponent2 || {};
   const home = o1.fullName || "";
@@ -214,9 +237,12 @@ function normalizeNpl(g, liveById) {
   const id = g.id || g.mainGameId;
   if (!home || !away || !id) return null;
   // Live scores: the game's own scores object when present,
-  // else the live-feed copy merged by game id.
-  const scores =
-    g.scores || (liveById && liveById[String(id)] && liveById[String(id)].scores) || null;
+  // else the live-feed copy merged by game id — or by team name,
+  // because a live game's id differs from its line game's id.
+  const liveCopy =
+    (liveById && liveById[String(id)]) ||
+    (liveByName && liveByName[teamKey(home, away)]);
+  const scores = g.scores || (liveCopy && liveCopy.scores) || null;
   const startTs = typeof g.startTs === "number" ? g.startTs : null;
   const nowSec = Math.floor(Date.now() / 1000);
   let status = "upcoming";
@@ -234,14 +260,16 @@ function normalizeNpl(g, liveById) {
   }
   const hs = scores ? scores.scoreOpp1 : null;
   const as = scores ? scores.scoreOpp2 : null;
+  const ck = scores ? cricketLive(scores) : null;
+  if (ck && ck.clock) clock = ck.clock;
   const info = g.matchInfoObj || {};
   return {
     id: String(id),
     league: "Nepal Premier League",
     home,
     away,
-    homeScore: typeof hs === "number" ? hs : null,
-    awayScore: typeof as === "number" ? as : null,
+    homeScore: ck ? ck.home : (typeof hs === "number" ? hs : null),
+    awayScore: ck ? ck.away : (typeof as === "number" ? as : null),
     status,
     minute,
     clock,
@@ -269,26 +297,45 @@ async function nplGames(base) {
   const raw = findNplGames(menu);
   if (raw === null) throw new Error("NPL champ not in menu");
   const liveById = {};
+  const liveByName = {};
   if (Array.isArray(live)) {
     for (const g of live) {
       const id = g.id || g.mainGameId;
       if (id) liveById[String(id)] = g;
+      const h = (g.opponent1 || {}).fullName;
+      const a = (g.opponent2 || {}).fullName;
+      if (h && a) liveByName[teamKey(h, a)] = g;
     }
   }
-  const games = raw.map((g) => normalizeNpl(g, liveById)).filter(Boolean);
-  // Merge official live scores: overlay onto the same fixture
-  // when 1xBet still lists it, else append as a live game.
+  const games = raw.map((g) => normalizeNpl(g, liveById, liveByName)).filter(Boolean);
+  // A live NPL game that left the line menu still shows up in the
+  // featured live feed — add it from 1xBet directly (by league
+  // name), so the strip can carry the 1xBet score, not just the
+  // official one. Verified live 17 Nov 2026: a T10 cricket game
+  // in topGamesByStat carried wicketScore + overStr.
+  if (Array.isArray(live)) {
+    for (const lg of live) {
+      const lname = String((lg.liga && lg.liga.name) || "").toLowerCase();
+      if (!lname.includes("nepal")) continue;
+      const fg = normalizeFeatured(lg);
+      if (!fg || !games.some((g) => sameTeams(g, fg))) games.push(fg);
+    }
+  }
+  // Merge official live scores — but 1xBet wins: only overlay the
+  // official score when the game has no 1xBet live score yet.
   // Live games first, then upcoming by kickoff.
   let usedOfficial = false;
   if (Array.isArray(official)) {
     for (const og of official) {
       const twin = games.find((g) => sameTeams(g, og));
       if (twin) {
-        twin.homeScore = og.homeScore;
-        twin.awayScore = og.awayScore;
-        twin.status = "live";
-        twin.clock = og.clock;
-        usedOfficial = true;
+        if (twin.homeScore == null && twin.awayScore == null) {
+          twin.homeScore = og.homeScore;
+          twin.awayScore = og.awayScore;
+          twin.status = "live";
+          twin.clock = og.clock;
+          usedOfficial = true;
+        }
       } else {
         games.push(og);
         usedOfficial = true;
