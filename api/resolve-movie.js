@@ -2214,7 +2214,7 @@ export default async function handler(req, res) {
       if (!/^\d+$/.test(tmdbId)) {
         return res.status(400).json({ error: "Bad TMDB id" });
       }
-      const cacheKey = [tmdbId, type, season, episode, hevc ? "hevc" : "h264"].join("|");
+      const cacheKey = ["w2", tmdbId, type, season, episode, hevc ? "hevc" : "h264"].join("|");
       const cached = watchCacheGet(cacheKey);
       if (cached) {
         res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
@@ -2297,9 +2297,28 @@ export default async function handler(req, res) {
               }
             }
           } catch {
-            // fall through to the Orion path below
+            // fall through to the browser attempt below
           }
+          // Titan could not be fetched from this server: VidRift's
+          // /api/source/ now answers data-centre IPs with a
+          // Cloudflare bot check (verified 17 Nov 2026), while a
+          // real browser gets the JSON fine. So hand the browser
+          // the exact Titan URL to try itself. If the answer is
+          // readable from the page (CORS), the page plays Titan
+          // natively; if not, it falls back to the next source.
+          // The token is short-lived, so this answer is never
+          // cached. (Before this change the code fell through to
+          // Orion HEVC here, which Chrome on Windows cannot
+          // decode — and that HEVC master was cached under the
+          // H.264 key, so repeat taps never retried Titan.)
+          const titanUrl =
+            `https://embed.vidrift.net/api/source/${typePath}` +
+            `?token=${encodeURIComponent(token)}` +
+            `&provider=titan&parent=aayushlife.live&hevc=0`;
+          res.setHeader("Content-Type", "application/json");
+          return res.status(200).json({ titanUrl });
         }
+        return res.status(200).json({ noSource: true });
       }
       // Orion path (HEVC, or Titan fallback): the embed page bakes
       // its own "Orion" copy; the master comes from warmManifests.
