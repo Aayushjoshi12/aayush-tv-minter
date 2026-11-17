@@ -22,6 +22,19 @@
 //           status, minute, clock, startTs, format }
 //   status: "upcoming" | "live" | "FT". Cricket has no minutes;
 //   the clock carries 1xBet's status line ("Event in progress").
+//
+//   LIVE-SCORE GAP (found 17 Nov 2026 ~17:05 NPT): once a game
+//   goes live it LEAVES leftMenuSports, and it is not featured
+//   in topGamesByStat either — so during play the strip showed
+//   no live score at all. Fix: live scores are merged in from
+//   the NPL official site's public API,
+//   https://nplcricketleague.com/api/live-scores.php
+//   (no CORS header, so it is fetched server-side here, same
+//   pattern as 1xBet). That API lists only live/recent matches
+//   (source: ESPN), so 1xBet stays the fixtures source and the
+//   official API supplies the live score, matched by team name.
+//   If the official fetch fails, the 1xBet list is returned
+//   unchanged — the merge never breaks the fixtures.
 // GET /api/onexbet?mode=featured
 //   -> the old featured-games list (topGamesByStat only).
 // GET /api/onexbet?debug=1
@@ -44,6 +57,11 @@ const NPL_MENU_PARAMS =
 
 const TOP_PARAMS =
   "cfView=3&country=130&fcountry=130&gr=909&lng=en&ref=1";
+
+// NPL official live-scores API (public JSON, source: ESPN).
+// No Access-Control-Allow-Origin, so it is fetched server-side.
+const NPL_LIVE_URL = "https://nplcricketleague.com/api/live-scores.php";
+const NPL_LIVE_REFERER = "https://nplcricketleague.com/";
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36";
@@ -231,7 +249,7 @@ function normalizeNpl(g, liveById) {
 
 async function nplGames(base) {
   const referer = "/en/line/cricket/2791573-nepal-premier-league";
-  const [menu, live] = await Promise.all([
+  const [menu, live, official] = await Promise.all([
     fetchJson(
       base,
       "/service-api/main-line-feed/v3/leftMenuSports?" + NPL_MENU_PARAMS,
@@ -242,6 +260,7 @@ async function nplGames(base) {
       "/service-api/main-live-feed/v3/topGamesByStat?" + TOP_PARAMS,
       "/en/live/football"
     ).catch(() => null),
+    nplLiveGames(),
   ]);
   const raw = findNplGames(menu);
   if (raw === null) throw new Error("NPL champ not in menu");
@@ -252,7 +271,92 @@ async function nplGames(base) {
       if (id) liveById[String(id)] = g;
     }
   }
-  return raw.map((g) => normalizeNpl(g, liveById)).filter(Boolean);
+  const games = raw.map((g) => normalizeNpl(g, liveById)).filter(Boolean);
+  // Merge official live scores: overlay onto the same fixture
+  // when 1xBet still lists it, else append as a live game.
+  // Live games first, then upcoming by kickoff.
+  let usedOfficial = false;
+  if (Array.isArray(official)) {
+    for (const og of official) {
+      const twin = games.find((g) => sameTeams(g, og));
+      if (twin) {
+        twin.homeScore = og.homeScore;
+        twin.awayScore = og.awayScore;
+        twin.status = "live";
+        twin.clock = og.clock;
+        usedOfficial = true;
+      } else {
+        games.push(og);
+        usedOfficial = true;
+      }
+    }
+  }
+  games.sort((a, b) => {
+    const rank = (g) => (g.status === "live" ? 0 : g.status === "FT" ? 2 : 1);
+    if (rank(a) !== rank(b)) return rank(a) - rank(b);
+    return (a.startTs || 0) - (b.startTs || 0);
+  });
+  return { games, usedOfficial };
+}
+
+// --- NPL official live scores ------------------------------------
+
+function nplScoreStr(s) {
+  if (s === null || s === undefined) return null;
+  const t = String(s).trim();
+  return t ? t : null;
+}
+
+function normalizeNplLive(m) {
+  if (!m || m.status !== "live") return null;
+  const home = String(m.team1 || "").trim();
+  const away = String(m.team2 || "").trim();
+  if (!home || !away) return null;
+  const overs = nplScoreStr(m.overs2) || nplScoreStr(m.overs1);
+  return {
+    id: "npl-" + String(m.id),
+    league: "Nepal Premier League",
+    home,
+    away,
+    homeScore: nplScoreStr(m.score1),
+    awayScore: nplScoreStr(m.score2),
+    status: "live",
+    minute: null,
+    clock: overs ? overs + " ov" : "Live",
+    startTs: null,
+    format: "T20",
+  };
+}
+
+async function nplLiveGames() {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try {
+    const r = await fetch(NPL_LIVE_URL, {
+      headers: {
+        "User-Agent": UA,
+        Accept: "application/json, text/plain, */*",
+        Referer: NPL_LIVE_REFERER,
+      },
+      signal: ctrl.signal,
+    });
+    if (!r.ok) return null;
+    const data = await r.json();
+    const matches = (data && data.matches) || [];
+    return matches.map(normalizeNplLive).filter(Boolean);
+  } catch (e) {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function sameTeams(a, b) {
+  const norm = (s) =>
+    String(s || "")
+      .toLowerCase()
+      .replace(/[^a-z]/g, "");
+  return norm(a.home) === norm(b.home) && norm(a.away) === norm(b.away);
 }
 
 // --- handler -------------------------------------------------------
@@ -272,11 +376,12 @@ export default async function handler(req, res) {
   for (const base of MIRRORS) {
     tried.push(base);
     try {
-      const games = featured
-        ? await featuredGames(base)
+      const result = featured
+        ? { games: await featuredGames(base), usedOfficial: false }
         : await nplGames(base);
+      const games = result.games;
       const out = {
-        source: "1xbet",
+        source: result.usedOfficial ? "1xbet+npl" : "1xbet",
         league: featured ? "featured" : "Nepal Premier League",
         mirror: base,
         fetchedAt: new Date().toISOString(),
