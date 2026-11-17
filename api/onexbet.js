@@ -660,6 +660,12 @@ async function searchGames(base, q) {
   if (!query) return { games: [], detail: null };
   const isId = /^\d{5,}$/.test(query);
   // Live list (all sports, up to 50) — the score/timer source.
+  // Plus the featured list: a game can be featured
+  // (topGamesByStat) without being in the first 50 of the live
+  // list — Sierra Leone vs DR Congo (id 771747795) was exactly
+  // that on 17 Nov 2026, so an ID search found only the
+  // score-less gameInfo and the card showed "Live" with no score
+  // and no stats. Merge featured in so both paths see it.
   let live = [];
   try {
     const data = await fetchJson(
@@ -672,9 +678,26 @@ async function searchGames(base, q) {
   } catch (e) {
     live = [];
   }
+  try {
+    const feat = await fetchJson(
+      base,
+      "/service-api/main-live-feed/v3/topGamesByStat?" + TOP_PARAMS,
+      "/en/live/football"
+    );
+    if (Array.isArray(feat)) {
+      for (const g of feat.map(normalizeFeatured).filter(Boolean)) {
+        if (!live.some((x) => x.id === g.id)) live.push(g);
+      }
+    }
+  } catch (e) {}
   if (isId) {
     const hit = live.find((g) => g.id === query);
     if (hit) return { games: [], detail: await gameDetail(base, hit) };
+    // The searched id may be an ALIAS of the live game, not the
+    // live id itself — e.g. 771747795 is a sub-game id for Sierra
+    // Leone vs DR Congo, whose live id is 771747706. gameInfo
+    // carries mainGameId (the live id), so resolve through it
+    // and retry the live list before giving up on the score.
     // Not live right now — the live gameInfo may still answer
     // (a finished game, or one between lists). No score there,
     // so the detail stands on its own.
@@ -687,6 +710,13 @@ async function searchGames(base, q) {
         "/en/live/football"
       );
       if (info && info.id) {
+        const mainId =
+          info.mainGameId != null ? String(info.mainGameId) : null;
+        if (mainId && mainId !== query) {
+          const mainHit = live.find((g) => g.id === mainId);
+          if (mainHit)
+            return { games: [], detail: await gameDetail(base, mainHit) };
+        }
         const d = {
           id: String(info.id),
           league: (info.liga && info.liga.name) || "Unknown",
@@ -697,7 +727,7 @@ async function searchGames(base, q) {
           status: "?",
           period: "",
           minute: null,
-          clock: "",
+          clock: "Score not available right now",
           startTs: typeof info.startTs === "number" ? info.startTs : null,
           format: "",
           timerSec: null,
