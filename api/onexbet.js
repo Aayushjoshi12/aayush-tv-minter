@@ -184,6 +184,20 @@ function normalizeFeatured(g) {
   const hs = scores.scoreOpp1;
   const as = scores.scoreOpp2;
   const ck = cricketLive(scores);
+  // statusOf reports the period ("1H"/"2H"/"ET"/"PEN") — but the
+  // site only renders the ticking clock for status "live", so a
+  // live game reported as "2H" showed a frozen minute instead of
+  // a ticking timer (found 17 Nov 2026). In-play periods are all
+  // "live" here; the period is kept separately for the label.
+  const period = status;
+  const hasScore =
+    typeof hs === "number" || typeof as === "number" || Boolean(ck);
+  const liveStatus =
+    status === "FT" || status === "HT"
+      ? status
+      : hasScore
+        ? "live"
+        : status;
   return {
     id: String(id),
     league: (g.liga && g.liga.name) || "Unknown",
@@ -191,7 +205,8 @@ function normalizeFeatured(g) {
     away,
     homeScore: ck ? ck.home : (typeof hs === "number" ? hs : null),
     awayScore: ck ? ck.away : (typeof as === "number" ? as : null),
-    status,
+    status: liveStatus,
+    period,
     minute,
     clock: (ck && ck.clock) || scores.statusLineStr || "",
     startTs: typeof g.startTs === "number" ? g.startTs : null,
