@@ -77,11 +77,13 @@ function cors(res) {
 
 function json(res, status, obj) {
   cors(res);
-  // Scores change fast, but 30s of edge caching keeps 1xBet
-  // from being hammered by every visitor's poll.
+  // 1s strip polling: keep the edge cache tiny (2s) so a poll
+  // almost always sees a fresh upstream fetch. This hammers
+  // 1xBet/NPL harder than the old 10s cache — acceptable for
+  // one live match, revisit if 1xBet starts throttling.
   res.setHeader(
     "Cache-Control",
-    "public, s-maxage=10, stale-while-revalidate=30"
+    "public, s-maxage=2, stale-while-revalidate=5"
   );
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
