@@ -1,4 +1,4 @@
-// api/onexbet.js — 1xBet featured live-scores proxy.
+// api/onexbet.js — 1xBet scores proxy for the Aayush TV scoreboard.
 //
 // The 1xBet lite mirror's service-api answers a plain GET with
 // browser-like headers (no key, no login) — captured from the user's
@@ -10,15 +10,23 @@
 // (no Access-Control-Allow-Origin), so this function fetches it
 // server-side and returns a small normalized JSON with CORS *.
 //
-// GET /api/onexbet
-//   -> { source: "1xbet", mirror, fetchedAt, games: [...] }
+// GET /api/onexbet (default: NPL)
+//   -> { source: "1xbet", league: "Nepal Premier League",
+//        mirror, fetchedAt, games: [...] }
+//   NPL games come from main-line-feed/v3/leftMenuSports with
+//   selectedMs for champ 2791573 ("Nepal. Premier league",
+//   sport 66 = Cricket). Live scores are merged in from
+//   main-live-feed/v3/topGamesByStat when the game is featured
+//   there, and from the game's own scores object when present.
 //   game: { id, league, home, away, homeScore, awayScore,
-//           status, minute, clock }
+//           status, minute, clock, startTs, format }
+//   status: "upcoming" | "live" | "FT". Cricket has no minutes;
+//   the clock carries 1xBet's status line ("Event in progress").
+// GET /api/onexbet?mode=featured
+//   -> the old featured-games list (topGamesByStat only).
 // GET /api/onexbet?debug=1
-//   -> + { rawStatus, tried: [mirrors attempted] }
+//   -> + { tried: [mirrors attempted] }
 //
-// Coverage limit: topGamesByStat returns only the games 1xBet
-// features (~5 at a time), NOT every live match and NOT NPL.
 // The mirror host rotates; two known mirrors are tried in order.
 
 const MIRRORS = [
@@ -26,7 +34,15 @@ const MIRRORS = [
   "https://1xlite-6428119.com",
 ];
 
-const PARAMS =
+// Champ 2791573 = Nepal Premier League (cricket, sport 66).
+// selectedMs values are the same ones the 1xBet line page sends
+// when the NPL page is open (captured 17 Nov 2026).
+const NPL_CHAMP_ID = 2791573;
+const NPL_MENU_PARAMS =
+  "country=130&fcountry=130&gr=909&lng=en&ref=1" +
+  "&selectedMs=1.66.2791573,2.66.2791573,10.66.2791573";
+
+const TOP_PARAMS =
   "cfView=3&country=130&fcountry=130&gr=909&lng=en&ref=1";
 
 const UA =
@@ -53,6 +69,35 @@ function json(res, status, obj) {
   res.setHeader("Content-Type", "application/json; charset=utf-8");
   res.end(JSON.stringify(obj));
 }
+
+function headersFor(base, refererPath) {
+  return {
+    "User-Agent": UA,
+    Accept: "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9",
+    Referer: base + refererPath,
+    "x-app-n": "__BETTING_APP__",
+    "x-svc-source": "__BETTING_APP__",
+    "x-requested-with": "XMLHttpRequest",
+  };
+}
+
+async function fetchJson(base, path, refererPath) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try {
+    const r = await fetch(base + path, {
+      headers: headersFor(base, refererPath),
+      signal: ctrl.signal,
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return await r.json();
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// --- featured mode (topGamesByStat) -------------------------------
 
 function statusOf(scores) {
   if (!scores) return { status: "?", minute: null };
@@ -85,7 +130,7 @@ function statusOf(scores) {
   return { status: scores.currentPeriodName || "?", minute };
 }
 
-function normalize(g) {
+function normalizeFeatured(g) {
   const o1 = g.opponent1 || {};
   const o2 = g.opponent2 || {};
   const home = o1.fullName || "";
@@ -106,35 +151,111 @@ function normalize(g) {
     status,
     minute,
     clock: scores.statusLineStr || "",
+    startTs: typeof g.startTs === "number" ? g.startTs : null,
+    format: "",
   };
 }
 
-async function fetchGames(base) {
-  const url =
-    base + "/service-api/main-live-feed/v3/topGamesByStat?" + PARAMS;
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
-  try {
-    const r = await fetch(url, {
-      headers: {
-        "User-Agent": UA,
-        Accept: "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        Referer: base + "/en/live/football",
-        "x-app-n": "__BETTING_APP__",
-        "x-svc-source": "__BETTING_APP__",
-        "x-requested-with": "XMLHttpRequest",
-      },
-      signal: ctrl.signal,
-    });
-    if (!r.ok) throw new Error("HTTP " + r.status);
-    const data = await r.json();
-    if (!Array.isArray(data)) throw new Error("unexpected body");
-    return { status: r.status, games: data.map(normalize).filter(Boolean) };
-  } finally {
-    clearTimeout(t);
-  }
+async function featuredGames(base) {
+  const data = await fetchJson(
+    base,
+    "/service-api/main-live-feed/v3/topGamesByStat?" + TOP_PARAMS,
+    "/en/live/football"
+  );
+  if (!Array.isArray(data)) throw new Error("unexpected body");
+  return data.map(normalizeFeatured).filter(Boolean);
 }
+
+// --- NPL mode ------------------------------------------------------
+
+function findNplGames(menu) {
+  // menu = [{ menuSectionId, sports: [{ ligas: [{ id, games }] }] }]
+  if (!Array.isArray(menu)) return null;
+  for (const section of menu) {
+    const sports = (section && section.sports) || [];
+    for (const sport of sports) {
+      const ligas = (sport && sport.ligas) || [];
+      for (const liga of ligas) {
+        if (liga && liga.id === NPL_CHAMP_ID) {
+          return Array.isArray(liga.games) ? liga.games : [];
+        }
+      }
+    }
+  }
+  return null;
+}
+
+function normalizeNpl(g, liveById) {
+  const o1 = g.opponent1 || {};
+  const o2 = g.opponent2 || {};
+  const home = o1.fullName || "";
+  const away = o2.fullName || "";
+  const id = g.id || g.mainGameId;
+  if (!home || !away || !id) return null;
+  // Live scores: the game's own scores object when present,
+  // else the live-feed copy merged by game id.
+  const scores =
+    g.scores || (liveById && liveById[String(id)] && liveById[String(id)].scores) || null;
+  const startTs = typeof g.startTs === "number" ? g.startTs : null;
+  const nowSec = Math.floor(Date.now() / 1000);
+  let status = "upcoming";
+  let clock = "";
+  let minute = null;
+  if (scores) {
+    const s = statusOf(scores);
+    minute = s.minute;
+    clock = scores.statusLineStr || "";
+    if (s.status === "FT") status = "FT";
+    else status = "live";
+  } else if (startTs && startTs <= nowSec) {
+    status = "live";
+    clock = "Live";
+  }
+  const hs = scores ? scores.scoreOpp1 : null;
+  const as = scores ? scores.scoreOpp2 : null;
+  const info = g.matchInfoObj || {};
+  return {
+    id: String(id),
+    league: "Nepal Premier League",
+    home,
+    away,
+    homeScore: typeof hs === "number" ? hs : null,
+    awayScore: typeof as === "number" ? as : null,
+    status,
+    minute,
+    clock,
+    startTs,
+    format: info.matchFormat || "T20",
+  };
+}
+
+async function nplGames(base) {
+  const referer = "/en/line/cricket/2791573-nepal-premier-league";
+  const [menu, live] = await Promise.all([
+    fetchJson(
+      base,
+      "/service-api/main-line-feed/v3/leftMenuSports?" + NPL_MENU_PARAMS,
+      referer
+    ),
+    fetchJson(
+      base,
+      "/service-api/main-live-feed/v3/topGamesByStat?" + TOP_PARAMS,
+      "/en/live/football"
+    ).catch(() => null),
+  ]);
+  const raw = findNplGames(menu);
+  if (raw === null) throw new Error("NPL champ not in menu");
+  const liveById = {};
+  if (Array.isArray(live)) {
+    for (const g of live) {
+      const id = g.id || g.mainGameId;
+      if (id) liveById[String(id)] = g;
+    }
+  }
+  return raw.map((g) => normalizeNpl(g, liveById)).filter(Boolean);
+}
+
+// --- handler -------------------------------------------------------
 
 export default async function handler(req, res) {
   if (req.method === "OPTIONS") {
@@ -145,22 +266,23 @@ export default async function handler(req, res) {
   }
 
   const debug = req.query && req.query.debug === "1";
+  const featured = req.query && req.query.mode === "featured";
   const tried = [];
   let lastError = "";
   for (const base of MIRRORS) {
     tried.push(base);
     try {
-      const { status, games } = await fetchGames(base);
+      const games = featured
+        ? await featuredGames(base)
+        : await nplGames(base);
       const out = {
         source: "1xbet",
+        league: featured ? "featured" : "Nepal Premier League",
         mirror: base,
         fetchedAt: new Date().toISOString(),
         games: games.slice(0, MAX_GAMES),
       };
-      if (debug) {
-        out.rawStatus = status;
-        out.tried = tried;
-      }
+      if (debug) out.tried = tried;
       json(res, 200, out);
       return;
     } catch (e) {
@@ -170,6 +292,7 @@ export default async function handler(req, res) {
 
   const out = {
     source: "1xbet",
+    league: featured ? "featured" : "Nepal Premier League",
     mirror: null,
     fetchedAt: new Date().toISOString(),
     games: [],
