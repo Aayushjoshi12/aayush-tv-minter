@@ -37,6 +37,16 @@
 //   unchanged — the merge never breaks the fixtures.
 // GET /api/onexbet?mode=featured
 //   -> the old featured-games list (topGamesByStat only).
+// GET /api/onexbet?mode=search&q=<text>
+//   -> { games: [...], detail: {...} | null, q }
+//   Numeric q = a 1xBet game ID: the live list is searched by id
+//   and the hit is enriched with live gameInfo (venue, weather,
+//   format, constId). Text q = team/league name: live games
+//   (games1x2) plus the NPL and UEFA fixtures the scoreboard
+//   already knows. The line feed has no general search, so
+//   upcoming coverage is NPL + UEFA only — the reply never
+//   pretends otherwise. A tap on a search row calls the same
+//   mode with that game's id to get its full detail.
 // GET /api/onexbet?debug=1
 //   -> + { tried: [mirrors attempted] }
 //
@@ -556,6 +566,140 @@ async function uefaGames(base) {
   return out.slice(0, UEFA_MAX_GAMES);
 }
 
+// --- search mode ---------------------------------------------------
+// Find a game by team/league name or by 1xBet game ID, with the
+// full detail 1xBet shows for it. gameInfo (live feed) carries
+// venue, weather, format, constId and line-up flags — but NO
+// scores and NO odds, so those come from the live list entry
+// (games1x2) instead. Betting odds are NOT available from any
+// endpoint used here, so the detail card never shows them.
+const SEARCH_MAX = 10;
+
+function detailFromInfo(info) {
+  if (!info || typeof info !== "object") return {};
+  const mi = info.matchInfoObj || {};
+  const weather = mi.weatherDescription
+    ? mi.weatherDescription + (mi.temperature ? " · " + mi.temperature : "")
+    : null;
+  return {
+    constId:
+      info.constId != null
+        ? String(info.constId)
+        : info.mainConstId != null
+          ? String(info.mainConstId)
+          : null,
+    sport: (info.sport && info.sport.name) || null,
+    venue: mi.location || null,
+    format: mi.matchFormat || null,
+    weather,
+    hasLineups: Boolean(info.statisticInfo && info.statisticInfo.hasLineUps),
+    hasStadium: Boolean(
+      info.statisticInfo && info.statisticInfo.hasStadiumInfo
+    ),
+    video: Boolean(info.video && info.video.enabled),
+  };
+}
+
+async function gameDetail(base, g) {
+  // Enrich a normalized live game with live gameInfo. A failed
+  // detail call never fails the search — the game still shows.
+  let extra = {};
+  try {
+    const info = await fetchJson(
+      base,
+      "/service-api/main-live-feed/v3/gameInfo?fcountry=130&gameId=" +
+        encodeURIComponent(g.id) +
+        "&gr=909&lng=en&ref=1",
+      "/en/live/football"
+    );
+    extra = detailFromInfo(info);
+  } catch (e) {
+    extra = {};
+  }
+  return Object.assign({}, g, extra);
+}
+
+async function searchGames(base, q) {
+  const query = String(q || "").trim();
+  if (!query) return { games: [], detail: null };
+  const isId = /^\d{5,}$/.test(query);
+  // Live list (all sports, up to 50) — the score/timer source.
+  let live = [];
+  try {
+    const data = await fetchJson(
+      base,
+      "/service-api/main-live-feed/v3/games1x2?cfView=3&count=50&country=130&fcountry=130&gr=909&grMode=4&lng=en&ref=1",
+      "/en/live/football"
+    );
+    if (Array.isArray(data))
+      live = data.map(normalizeFeatured).filter(Boolean);
+  } catch (e) {
+    live = [];
+  }
+  if (isId) {
+    const hit = live.find((g) => g.id === query);
+    if (hit) return { games: [], detail: await gameDetail(base, hit) };
+    // Not live right now — the live gameInfo may still answer
+    // (a finished game, or one between lists). No score there,
+    // so the detail stands on its own.
+    try {
+      const info = await fetchJson(
+        base,
+        "/service-api/main-live-feed/v3/gameInfo?fcountry=130&gameId=" +
+          encodeURIComponent(query) +
+          "&gr=909&lng=en&ref=1",
+        "/en/live/football"
+      );
+      if (info && info.id) {
+        const d = {
+          id: String(info.id),
+          league: (info.liga && info.liga.name) || "Unknown",
+          home: (info.opponent1 && info.opponent1.fullName) || "",
+          away: (info.opponent2 && info.opponent2.fullName) || "",
+          homeScore: null,
+          awayScore: null,
+          status: "?",
+          period: "",
+          minute: null,
+          clock: "",
+          startTs: typeof info.startTs === "number" ? info.startTs : null,
+          format: "",
+          timerSec: null,
+        };
+        return { games: [], detail: Object.assign(d, detailFromInfo(info)) };
+      }
+    } catch (e) {}
+    return { games: [], detail: null };
+  }
+  // Text search: live games by team/league name, then the NPL
+  // and UEFA fixtures the scoreboard already fetches.
+  const needle = query.toLowerCase();
+  const match = (g) =>
+    String(g.home || "").toLowerCase().includes(needle) ||
+    String(g.away || "").toLowerCase().includes(needle) ||
+    String(g.league || "").toLowerCase().includes(needle);
+  const out = [];
+  const push = (g) => {
+    if (!g || !match(g)) return;
+    if (out.some((x) => x.id === g.id || sameTeams(x, g))) return;
+    out.push(g);
+  };
+  live.forEach(push);
+  if (out.length < SEARCH_MAX) {
+    try {
+      const res = await nplGames(base);
+      res.games.forEach(push);
+    } catch (e) {}
+  }
+  if (out.length < SEARCH_MAX) {
+    try {
+      const uefa = await uefaGames(base);
+      uefa.forEach(push);
+    } catch (e) {}
+  }
+  return { games: out.slice(0, SEARCH_MAX), detail: null };
+}
+
 // --- handler -------------------------------------------------------
 
 export default async function handler(req, res) {
@@ -570,11 +714,27 @@ export default async function handler(req, res) {
   const mode = (req.query && req.query.mode) || "";
   const featured = mode === "featured";
   const scoreboard = mode === "scoreboard";
+  const search = mode === "search";
   const tried = [];
   let lastError = "";
   for (const base of MIRRORS) {
     tried.push(base);
     try {
+      if (search) {
+        const r = await searchGames(base, (req.query && req.query.q) || "");
+        const out = {
+          source: "1xbet",
+          league: "Search",
+          mirror: base,
+          fetchedAt: new Date().toISOString(),
+          games: r.games,
+          detail: r.detail,
+          q: (req.query && req.query.q) || "",
+        };
+        if (debug) out.tried = tried;
+        json(res, 200, out);
+        return;
+      }
       const result = featured
         ? { games: await featuredGames(base), usedOfficial: false }
         : await nplGames(base);
@@ -609,7 +769,7 @@ export default async function handler(req, res) {
 
   const out = {
     source: "1xbet",
-    league: featured ? "featured" : "Nepal Premier League",
+    league: featured ? "featured" : search ? "Search" : "Nepal Premier League",
     mirror: null,
     fetchedAt: new Date().toISOString(),
     games: [],
