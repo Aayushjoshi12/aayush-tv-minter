@@ -170,11 +170,98 @@ function cricketLive(scores) {
   const wk = ext && ext.cricketScore && ext.cricketScore.wicketScore;
   if (!wk || wk.opponent1 === undefined || wk.opponent2 === undefined) return null;
   const inns = ext.innsStats || {};
+  // Innings break (isBreak / "Half-time"): the overs read 0.0
+  // for the innings that hasn't started — say so plainly
+  // instead of showing "0.0 ov".
+  let clock = inns.overStr ? String(inns.overStr) + " ov" : null;
+  if (scores && scores.isBreak) clock = "Innings break";
+  else {
+    const pn = String(scores.currentPeriodName || "");
+    if (pn === "1st innings" || pn === "2nd innings")
+      clock = pn + " · " + clock;
+  }
   return {
     home: String(wk.opponent1),
     away: String(wk.opponent2),
-    clock: inns.overStr ? String(inns.overStr) + " ov" : null,
+    clock,
   };
+}
+
+// Current-innings run rate, from the scorecard JSON string in
+// scores.statistic.main.InningsStatistic ("13,62" -> "13.62").
+// Individual batsman/bowler names are NOT in this payload
+// (names are null, only player ids), so no scorecard names.
+function cricketRunRate(scores) {
+  try {
+    const main = scores && scores.statistic && scores.statistic.main;
+    const raw = main && main.InningsStatistic;
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    const st = data && Array.isArray(data.St) ? data.St[0] : null;
+    const rr = st && st.RR ? String(st.RR).replace(",", ".") : "";
+    return rr ? rr : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Raw cricket detail carried through normalization; the target
+// is computed in gameDetail, where the format is known.
+function cricketRaw(scores) {
+  const ext = scores && scores.extendedScore;
+  const inns = (ext && ext.innsStats) || {};
+  return {
+    isBreak: scores ? scores.isBreak === true : false,
+    team: typeof inns.team === "number" ? inns.team : null,
+    overStr: inns.overStr ? String(inns.overStr) : null,
+    runRate: cricketRunRate(scores),
+  };
+}
+
+function parseRuns(v) {
+  if (typeof v === "number") return v;
+  if (typeof v === "string") {
+    const n = parseInt(v.split("/")[0], 10);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+// Chasing target for a limited-overs cricket game: the team
+// batting second needs first-innings + 1. Only when the format
+// is limited-overs (Tests have no fixed target this way) and
+// team 2 is batting. Balls left from the format's total.
+function addCricketTarget(out) {
+  const c = out.cricket;
+  if (!c) return;
+  const fmt = String(out.format || "");
+  const limited =
+    fmt.includes("T20") ||
+    fmt.includes("T10") ||
+    fmt.includes("ODI") ||
+    fmt.includes("One Day") ||
+    fmt.includes("Hundred");
+  if (!limited || c.team !== 2) return;
+  const first = parseRuns(out.homeScore);
+  const second = parseRuns(out.awayScore);
+  if (first == null || second == null) return;
+  c.target = first + 1;
+  c.need = Math.max(0, c.target - second);
+  const totalBalls = fmt.includes("T20")
+    ? 120
+    : fmt.includes("T10")
+      ? 60
+      : fmt.includes("ODI") || fmt.includes("One Day")
+        ? 300
+        : fmt.includes("Hundred")
+          ? 100
+          : null;
+  if (totalBalls != null && c.overStr) {
+    const parts = String(c.overStr).split(".");
+    const bowled =
+      (parseInt(parts[0], 10) || 0) * 6 + (parseInt(parts[1], 10) || 0);
+    c.ballsLeft = Math.max(0, totalBalls - bowled);
+  }
 }
 
 // Live match stats (1xBet's own table): cards, corners,
@@ -256,6 +343,7 @@ function normalizeFeatured(g) {
     format: "",
     timerSec: (scores.timer && typeof scores.timer.timeSec === "number") ? scores.timer.timeSec : null,
     stats: tabloStats(scores),
+    cricket: ck ? cricketRaw(scores) : null,
   };
 }
 
@@ -652,7 +740,9 @@ async function gameDetail(base, g) {
   } catch (e) {
     extra = {};
   }
-  return Object.assign({}, g, extra);
+  const merged = Object.assign({}, g, extra);
+  addCricketTarget(merged);
+  return merged;
 }
 
 async function searchGames(base, q) {
