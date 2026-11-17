@@ -173,6 +173,7 @@ function normalizeFeatured(g) {
     clock: scores.statusLineStr || "",
     startTs: typeof g.startTs === "number" ? g.startTs : null,
     format: "",
+    timerSec: (scores.timer && typeof scores.timer.timeSec === "number") ? scores.timer.timeSec : null,
   };
 }
 
@@ -246,6 +247,7 @@ function normalizeNpl(g, liveById) {
     clock,
     startTs,
     format: info.matchFormat || "T20",
+    timerSec: (scores && scores.timer && typeof scores.timer.timeSec === "number") ? scores.timer.timeSec : null,
   };
 }
 
@@ -335,6 +337,7 @@ function normalizeNplLive(m) {
     clock: overs ? overs + " ov" : "Live",
     startTs: null,
     format: "T20",
+    timerSec: null,
   };
 }
 
