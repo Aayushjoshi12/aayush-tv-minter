@@ -81,7 +81,7 @@ function json(res, status, obj) {
   // from being hammered by every visitor's poll.
   res.setHeader(
     "Cache-Control",
-    "public, s-maxage=30, stale-while-revalidate=60"
+    "public, s-maxage=10, stale-while-revalidate=30"
   );
   res.statusCode = status;
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -312,7 +312,15 @@ function normalizeNplLive(m) {
   const home = String(m.team1 || "").trim();
   const away = String(m.team2 || "").trim();
   if (!home || !away) return null;
-  const overs = nplScoreStr(m.overs2) || nplScoreStr(m.overs1);
+  // The scorecard lists innings in order; the last one is the innings in
+  // progress, so its overs are the current overs. (overs1/overs2 alone
+  // can't tell which innings is current — the chasing team isn't always team1.)
+  const _inns = (m.scorecard && m.scorecard.innings) || [];
+  const _cur = _inns.length ? _inns[_inns.length - 1] : null;
+  const overs =
+    (_cur && nplScoreStr(_cur.overs)) ||
+    nplScoreStr(m.overs1) ||
+    nplScoreStr(m.overs2);
   return {
     id: "npl-" + String(m.id),
     league: "Nepal Premier League",
