@@ -419,6 +419,128 @@ function sameTeams(a, b) {
   return norm(a.home) === norm(b.home) && norm(a.away) === norm(b.away);
 }
 
+// --- UEFA (Scoreboard section) --------------------------------------
+// Live UEFA games come from the live feed's games1x2 list (all live
+// games, count=50 is the max the endpoint accepts — 60+ returns
+// 400). Tonight's live UEFA games are the U19 Euro qualifiers.
+// Upcoming fixtures come from the line feed for the same champ
+// ids, discovered from the live games themselves.
+const UEFA_MAX_CHAMPS = 3;
+const UEFA_MAX_GAMES = 12;
+
+function isUefaLiga(name) {
+  return String(name || "").toLowerCase().includes("uefa");
+}
+
+function findLigaGames(menu, champId) {
+  if (!Array.isArray(menu)) return null;
+  for (const section of menu) {
+    const sports = (section && section.sports) || [];
+    for (const sport of sports) {
+      const ligas = (sport && sport.ligas) || [];
+      for (const liga of ligas) {
+        if (liga && liga.id === champId) {
+          return { name: liga.name || "UEFA", games: Array.isArray(liga.games) ? liga.games : [] };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// Line-feed game (fixtures + any live game still listed): same
+// shape as the NPL normalizer, but with the caller's league name.
+function normalizeUefaLine(g, league) {
+  const o1 = g.opponent1 || {};
+  const o2 = g.opponent2 || {};
+  const home = o1.fullName || "";
+  const away = o2.fullName || "";
+  const id = g.id || g.mainGameId;
+  if (!home || !away || !id) return null;
+  const scores = g.scores || null;
+  const startTs = typeof g.startTs === "number" ? g.startTs : null;
+  const nowSec = Math.floor(Date.now() / 1000);
+  let status = "upcoming";
+  let clock = "";
+  let minute = null;
+  if (scores) {
+    const st = statusOf(scores);
+    minute = st.minute;
+    clock = scores.statusLineStr || "";
+    if (st.status === "FT") status = "FT";
+    else status = "live";
+  } else if (startTs && startTs <= nowSec) {
+    status = "live";
+    clock = "Live";
+  }
+  const ck = scores ? cricketLive(scores) : null;
+  if (ck && ck.clock) clock = ck.clock;
+  return {
+    id: String(id),
+    league,
+    home,
+    away,
+    homeScore: ck ? ck.home : (scores && typeof scores.scoreOpp1 === "number" ? scores.scoreOpp1 : null),
+    awayScore: ck ? ck.away : (scores && typeof scores.scoreOpp2 === "number" ? scores.scoreOpp2 : null),
+    status,
+    minute,
+    clock,
+    startTs,
+    format: "",
+    timerSec: (scores && scores.timer && typeof scores.timer.timeSec === "number") ? scores.timer.timeSec : null,
+  };
+}
+
+async function uefaGames(base) {
+  const out = [];
+  let champIds = [];
+  try {
+    const data = await fetchJson(
+      base,
+      "/service-api/main-live-feed/v3/games1x2?cfView=3&count=50&country=130&fcountry=130&gr=909&grMode=4&lng=en&ref=1",
+      "/en/live/football"
+    );
+    if (Array.isArray(data)) {
+      for (const g of data) {
+        const lname = (g.liga && g.liga.name) || "";
+        if (!isUefaLiga(lname)) continue;
+        const fg = normalizeFeatured(g);
+        if (fg) {
+          out.push(fg);
+          if (g.liga.id && !champIds.includes(g.liga.id)) champIds.push(g.liga.id);
+        }
+      }
+    }
+  } catch (e) {
+    // Live list failed — upcoming fixtures below still work.
+  }
+  // Upcoming fixtures for the same UEFA champs (line feed).
+  for (const cid of champIds.slice(0, UEFA_MAX_CHAMPS)) {
+    try {
+      const menu = await fetchJson(
+        base,
+        "/service-api/main-line-feed/v3/leftMenuSports?country=130&fcountry=130&gr=909&lng=en&ref=1" +
+          "&selectedMs=1.1." + cid + ",2.1." + cid + ",10.1." + cid,
+        "/en/line/football"
+      );
+      const found = findLigaGames(menu, cid);
+      if (!found) continue;
+      for (const g of found.games) {
+        const ng = normalizeUefaLine(g, found.name);
+        if (ng && !out.some((x) => sameTeams(x, ng))) out.push(ng);
+      }
+    } catch (e) {
+      // One champ failing must not break the section.
+    }
+  }
+  out.sort((a, b) => {
+    const rank = (g) => (g.status === "live" ? 0 : g.status === "FT" ? 2 : 1);
+    if (rank(a) !== rank(b)) return rank(a) - rank(b);
+    return (a.startTs || 0) - (b.startTs || 0);
+  });
+  return out.slice(0, UEFA_MAX_GAMES);
+}
+
 // --- handler -------------------------------------------------------
 
 export default async function handler(req, res) {
@@ -430,7 +552,9 @@ export default async function handler(req, res) {
   }
 
   const debug = req.query && req.query.debug === "1";
-  const featured = req.query && req.query.mode === "featured";
+  const mode = (req.query && req.query.mode) || "";
+  const featured = mode === "featured";
+  const scoreboard = mode === "scoreboard";
   const tried = [];
   let lastError = "";
   for (const base of MIRRORS) {
@@ -447,6 +571,19 @@ export default async function handler(req, res) {
         fetchedAt: new Date().toISOString(),
         games: games.slice(0, MAX_GAMES),
       };
+      if (scoreboard) {
+        // Scoreboard section: NPL + UEFA side by side. UEFA must
+        // never break the NPL half, so it is fetched separately.
+        let uefa = [];
+        try {
+          uefa = await uefaGames(base);
+        } catch (e) {
+          uefa = [];
+        }
+        out.npl = out.games;
+        out.uefa = uefa;
+        out.league = "Scoreboard";
+      }
       if (debug) out.tried = tried;
       json(res, 200, out);
       return;
