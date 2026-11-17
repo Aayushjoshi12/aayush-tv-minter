@@ -177,6 +177,39 @@ function cricketLive(scores) {
   };
 }
 
+// Live match stats (1xBet's own table): cards, corners,
+// attacks, possession, shots, xG, saves, subs... The list
+// varies by game — some games carry 15 stats, others 4, and
+// fouls are not in it. Rendered in the detail card, in this
+// order first (the ones people ask for), then the rest as 1xBet
+// sends them.
+function tabloStats(scores) {
+  const t = scores && scores.tabloStats;
+  const arr =
+    t && Array.isArray(t["0"]) ? t["0"] : Array.isArray(t) ? t : null;
+  if (!arr) return null;
+  const order = [
+    "Yellow cards", "Red card", "Corner", "Fouls",
+    "Attacks", "Dangerous attacks", "Possession %",
+    "Shots on target", "Shots off target", "xG", "Saves",
+    "Penalty", "Substitutions", "Key Passes",
+    "Passing Accuracy %", "Crosses",
+  ];
+  const list = arr
+    .filter((x) => x && x.name != null)
+    .map((x) => ({
+      name: String(x.name),
+      home: String(x.s1 === undefined || x.s1 === null ? "" : x.s1),
+      away: String(x.s2 === undefined || x.s2 === null ? "" : x.s2),
+    }));
+  list.sort((a, b) => {
+    const ia = order.indexOf(a.name);
+    const ib = order.indexOf(b.name);
+    return (ia === -1 ? 99 : ia) - (ib === -1 ? 99 : ib);
+  });
+  return list.length ? list : null;
+}
+
 function teamKey(home, away) {
   const norm = (v) => String(v || "").toLowerCase().replace(/[^a-z]/g, "");
   return norm(home) + "|" + norm(away);
@@ -222,6 +255,7 @@ function normalizeFeatured(g) {
     startTs: typeof g.startTs === "number" ? g.startTs : null,
     format: "",
     timerSec: (scores.timer && typeof scores.timer.timeSec === "number") ? scores.timer.timeSec : null,
+    stats: tabloStats(scores),
   };
 }
 
@@ -301,6 +335,7 @@ function normalizeNpl(g, liveById, liveByName) {
     startTs,
     format: info.matchFormat || "T20",
     timerSec: (scores && scores.timer && typeof scores.timer.timeSec === "number") ? scores.timer.timeSec : null,
+    stats: tabloStats(scores),
   };
 }
 
@@ -513,6 +548,7 @@ function normalizeUefaLine(g, league) {
     startTs,
     format: "",
     timerSec: (scores && scores.timer && typeof scores.timer.timeSec === "number") ? scores.timer.timeSec : null,
+    stats: tabloStats(scores),
   };
 }
 
