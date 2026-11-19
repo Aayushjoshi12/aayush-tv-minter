@@ -218,6 +218,127 @@ function cricketRaw(scores) {
   };
 }
 
+// --- NPL scorecard (Cricinfo-style detail, Advanced) -----------------
+// 1xBet's own feed carries NO batsman or bowler names (its
+// InningsStatistic payload has player ids only, names null), so
+// the scorecard comes from the NPL official API instead — the
+// same source the scoreboard already uses as its fallback.
+// Its `live` block names the striker / non-striker, the current
+// bowler, partnership, last wicket, run rate and last over, and
+// the scorecard carries the full batting + bowling card of the
+// innings in progress. Non-NPL cricket has no such source, so
+// it keeps the 1xBet-only rows and shows no scorecard.
+let nplRawCache = { ts: 0, data: null };
+async function fetchNplRaw() {
+  const now = Date.now();
+  if (nplRawCache.data && now - nplRawCache.ts < 10000)
+    return nplRawCache.data;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
+  try {
+    const r = await fetch(NPL_LIVE_URL, {
+      headers: {
+        "User-Agent": UA,
+        Accept: "application/json, text/plain, */*",
+        Referer: NPL_LIVE_REFERER,
+      },
+      signal: ctrl.signal,
+    });
+    if (!r.ok) return null;
+    const data = await r.json();
+    nplRawCache = { ts: now, data };
+    return data;
+  } catch (e) {
+    return null;
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+function nplScorecard(data, home, away) {
+  if (!data || typeof data !== "object") return null;
+  const norm = (s) =>
+    String(s || "")
+      .toLowerCase()
+      .replace(/[^a-z]/g, "");
+  const matches = (data && data.matches) || [];
+  for (const m of matches) {
+    if (!m || m.status !== "live") continue;
+    const teams = new Set([norm(m.team1), norm(m.team2)]);
+    if (teams.has("") || !teams.has(norm(home)) || !teams.has(norm(away)))
+      continue;
+    const live = m.live || {};
+    const batters = live.batters || [];
+    if (!Array.isArray(batters) || !batters.length) return null;
+    const bat = (b) => ({
+      name: String(b.name || ""),
+      runs: String(b.runs ?? ""),
+      balls: String(b.balls ?? ""),
+      fours: String(b.fours ?? ""),
+      sixes: String(b.sixes ?? ""),
+      sr: String(b.sr ?? ""),
+      dismissal: String(b.dismissal || ""),
+    });
+    const bowl = (b) => ({
+      name: String(b.name || ""),
+      overs: String(b.overs ?? ""),
+      maidens: String(b.maidens ?? ""),
+      runs: String(b.runs ?? ""),
+      wickets: String(b.wickets ?? ""),
+      econ: String(b.econ ?? ""),
+    });
+    let striker = null;
+    let nonStriker = null;
+    for (const b of batters) {
+      if (!b || typeof b !== "object") continue;
+      if (b.striker === true) striker = bat(b);
+      else if (b.striker === false) nonStriker = bat(b);
+    }
+    let bowler = null;
+    for (const b of live.bowlers || []) {
+      if (b && typeof b === "object" && b.current === true) {
+        bowler = bowl(b);
+        break;
+      }
+    }
+    const lw = live.lastWicket || {};
+    const inns = ((m.scorecard || {}).innings) || [];
+    const cur = inns.length ? inns[inns.length - 1] : {};
+    const batting = ((cur.batting || []).filter(
+      (b) => b && b.name
+    )).map(bat);
+    for (const b of batting) {
+      if (striker && b.name === striker.name) b.onStrike = true;
+      else if (nonStriker && b.name === nonStriker.name)
+        b.onStrike = false;
+    }
+    return {
+      statusText: String(m.statusText || ""),
+      striker,
+      nonStriker,
+      bowler,
+      partnership: String(live.partnership || ""),
+      lastWicket: lw.name
+        ? {
+            name: String(lw.name || ""),
+            runs: String(lw.runs ?? ""),
+            balls: String(lw.balls ?? ""),
+            dismissal: String(lw.dismissal || ""),
+            fow: String(lw.fow ?? ""),
+            over: String(lw.over ?? ""),
+          }
+        : null,
+      crr: String(live.crr || ""),
+      lastOver: String(live.lastOver || ""),
+      batting,
+      bowling: ((cur.bowling || []).filter(
+        (b) => b && b.name
+      )).map(bowl),
+    };
+  }
+  return null;
+}
+
 function parseRuns(v) {
   if (typeof v === "number") return v;
   if (typeof v === "string") {
@@ -742,6 +863,17 @@ async function gameDetail(base, g) {
   }
   const merged = Object.assign({}, g, extra);
   addCricketTarget(merged);
+  // NPL cricket only: the full scorecard (striker, bowler,
+  // partnership...) comes from the NPL official API — the
+  // 1xBet feed carries no player names at all. A failed or
+  // absent scorecard never fails the detail.
+  if (merged.cricket && String(g.league || "").toLowerCase().includes("nepal")) {
+    try {
+      const raw = await fetchNplRaw();
+      const card = raw ? nplScorecard(raw, g.home, g.away) : null;
+      if (card) merged.cricket.scorecard = card;
+    } catch (e) {}
+  }
   return merged;
 }
 
