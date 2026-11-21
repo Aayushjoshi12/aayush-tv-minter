@@ -769,10 +769,10 @@ async function loklokPlay(title, year) {
 
 // ---------- MoviesMod download (one-click download link) ----------
 //
-// Reverse-engineered 2026-11-12. MoviesMod (moviesmod.tw) is a
+// Reverse-engineered 2026-11-12. MoviesMod (moviesmod.fi) is a
 // WordPress download site (Hollywood/Bollywood, 480p/720p/1080p).
 // The download chain, traced hop by hop:
-//   1. Movie page https://moviesmod.tw/download-<slug>/ has one
+//   1. Movie page https://moviesmod.fi/download-<slug>/ has one
 //      links.modpro.blog/archives/<id> button per quality.
 //   2. The modpro page ("wait 5 seconds") lists the download servers
 //      as https://en.thenaukriadda.in/?sid=<base64> links.
@@ -812,21 +812,21 @@ async function loklokPlay(title, year) {
 //
 // The index now covers the WHOLE modlist network (12 Nov 2026 —
 // the user asked for all sites, not just MoviesMod):
-//   mm  = moviesmod.tw (Hollywood)     — ~21,705 entries
-//   ml  = moviesleech.media (Bollywood)— ~3,235 entries
-//   uhd = uhdmovies.beauty (4K/UHD)    — ~5,461 entries
+//   mm  = moviesmod.fi (Hollywood)     — ~21,705 entries
+//   ml  = moviesleech.help (Bollywood)— ~3,235 entries
+//   uhd = uhdmovies.ceo (4K/UHD)    — ~5,461 entries
 //   af  = animeflix.my (anime)         — ~759 entries
 // (gamesleech / softwareleech are games + software, not movies.)
 // Built by tools/build-modlist-index.py from each site's Yoast
 // sitemaps, which also carry the poster URL (<image:loc>).
 // Entry: {s: slug, site: mm|ml|uhd|af, p: poster URL}.
 const MODLIST_SITES = {
-  mm: { base: "https://moviesmod.tw", name: "MoviesMod" },
-  ml: { base: "https://moviesleech.media", name: "MoviesLeech" },
-  uhd: { base: "https://uhdmovies.beauty", name: "UHDMovies" },
+  mm: { base: "https://moviesmod.fi", name: "MoviesMod" },
+  ml: { base: "https://moviesleech.help", name: "MoviesLeech" },
+  uhd: { base: "https://uhdmovies.ceo", name: "UHDMovies" },
   af: { base: "https://animeflix.my", name: "AnimeFlix" },
 };
-const MOVIESMOD_BASE = "https://moviesmod.tw";
+const MOVIESMOD_BASE = "https://moviesmod.fi";
 const MODPRO_BASE = "https://links.modpro.blog";
 const NAUKRI_BASE = "https://en.thenaukriadda.in";
 
@@ -1275,9 +1275,9 @@ async function followNaukriSid(sid) {
 // Shared step for the download chain: find the movie page and read
 // its download links. Each network site links its files a little
 // differently, but they all end at the same thenaukriadda sid chain:
-//   moviesmod.tw     -> links.modpro.blog/archives/<id> per quality
-//   moviesleech.media-> leechpro.blog/archives/<id> per quality
-//   uhdmovies.beauty -> direct en.thenaukriadda.in/?sid= links
+//   moviesmod.fi     -> links.modpro.blog/archives/<id> per quality
+//   moviesleech.help-> leechpro.blog/archives/<id> per quality
+//   uhdmovies.ceo -> direct en.thenaukriadda.in/?sid= links
 //                        (no blog step; quality is in the page title)
 //   animeflix.my     -> episodes.animeflix.my/archives/<id>, whose
 //                        chain is a different shortener (ronracepub)
