@@ -20,6 +20,11 @@ Contract:
   GET /nexus?tmdb=275204&type=tv&se=2&ep=1    -> same, for a series episode
   (mp4 winner)                                 -> {"url": ..., "kind": "mp4", "provider": ..., "label": ...}
   (no provider has a copy)                     -> {"noSource": true}
+  GET /introdb?imdb=tt14650074&type=tv&se=2&ep=1 -> {"intro": {"start_sec": 497, "end_sec": 506}, "recap": null, "outro": null}
+  (Skip Intro / Next Episode timestamps from Nexus's introdb API.
+  Vercel cannot proxy this — nxsha.space 403s Vercel (proven 21 Nov
+  2026) — and the browser cannot call it directly (no CORS header),
+  so it lives here on the unblocked VM.)
   GET /health                                  -> {"ok": true}
 
 Scheme: CryptoJS AES, OpenSSL salted format, one hardcoded passphrase
@@ -240,6 +245,34 @@ class Handler(BaseHTTPRequestHandler):
             if "manifest" in res:
                 return self._send(200, res["manifest"], "application/vnd.apple.mpegurl")
             return self._send(200, json.dumps(res), "application/json")
+        if u.path == "/introdb":
+            qs = parse_qs(u.query)
+            imdb = (qs.get("imdb") or [""])[0].strip()
+            type_ = "tv" if (qs.get("type") or ["movie"])[0] == "tv" else "movie"
+            try:
+                season = max(1, int((qs.get("se") or ["1"])[0]))
+                episode = max(1, int((qs.get("ep") or ["1"])[0]))
+            except ValueError:
+                season, episode = 1, 1
+            if not re.fullmatch(r"tt\d+", imdb):
+                return self._send(400, json.dumps({"error": "Bad IMDb id"}), "application/json")
+            url = (f"{BASE}/api/introdb?imdb_id={imdb}&is_movie={'true' if type_ == 'movie' else 'false'}"
+                   + (f"&season={season}&episode={episode}" if type_ == "tv" else ""))
+            status, _, body = _fetch(url, timeout=8)
+            if status != 200:
+                return self._send(502, json.dumps({"error": "Introdb fetch failed", "upstream": status}), "application/json")
+            try:
+                d = json.loads(body.decode())
+            except Exception:
+                return self._send(502, json.dumps({"error": "Introdb fetch failed"}), "application/json")
+            def seg(x):
+                if isinstance(x, dict):
+                    try:
+                        return {"start_sec": float(x["start_sec"]), "end_sec": float(x["end_sec"])}
+                    except Exception:
+                        return None
+                return None
+            return self._send(200, json.dumps({"intro": seg(d.get("intro")), "recap": seg(d.get("recap")), "outro": seg(d.get("outro"))}), "application/json")
         return self._send(404, json.dumps({"error": "not found"}), "application/json")
 
 
