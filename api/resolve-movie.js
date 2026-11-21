@@ -2316,7 +2316,8 @@ export default async function handler(req, res) {
         !/^https:\/\/pv\.subscdn\.top\//.test(target) &&
         !/^https:\/\/(cacdn|bcdnxw)\.hakunaymatata\.com\//.test(target) &&
         !/^https:\/\/(net79|net27)\.cc\/api\/proxy\/video\?url=/.test(target) &&
-        !/^https:\/\/netmirrors\.vip\/api\/proxy\/video\?url=/.test(target)
+        !/^https:\/\/netmirrors\.vip\/api\/proxy\/video\?url=/.test(target) &&
+        !/^https:\/\/subs[0-9]*\.strem\.io\//.test(target)
       ) {
         return res.status(400).json({ error: "Bad subtitle URL" });
       }
@@ -2327,6 +2328,42 @@ export default async function handler(req, res) {
       return res.status(200).send(srtToVtt(srt));
     } catch {
       return res.status(502).json({ error: "Subtitle fetch failed" });
+    }
+  }
+
+  // --- Skip Intro timestamps (Nexus introdb, 21 Nov 2026): the
+  // Movies page shows a "Skip Intro" button while the video is
+  // inside the intro, and "Next Episode" once the outro starts.
+  // The API is open (no key) but sends no CORS header, so the
+  // browser cannot call it directly — the page asks here instead.
+  // Whether Vercel can reach nxsha.space at all is an open
+  // question (its /api/sources 403s Vercel); a 502 here means the
+  // page falls back to the VM Nexus resolver.
+  if (q.introdb) {
+    try {
+      const imdb = String(q.introdb).trim();
+      const type = q.type === "tv" ? "tv" : "movie";
+      const season = Math.max(1, parseInt(String(q.se || "1"), 10) || 1);
+      const episode = Math.max(1, parseInt(String(q.ep || "1"), 10) || 1);
+      if (!/^tt\d+$/.test(imdb)) {
+        return res.status(400).json({ error: "Bad IMDb id" });
+      }
+      const url =
+        "https://nxsha.space/api/introdb?imdb_id=" + imdb +
+        "&is_movie=" + (type === "movie" ? "true" : "false") +
+        (type === "tv" ? "&season=" + season + "&episode=" + episode : "");
+      const r = await fetchWithTimeout(url, { "User-Agent": UA }, 8000);
+      if (!r.ok) {
+        return res.status(502).json({ error: "Introdb fetch failed", upstream: r.status });
+      }
+      const d = await r.json();
+      const seg = (x) =>
+        x && isFinite(+x.start_sec) && isFinite(+x.end_sec)
+          ? { start_sec: +x.start_sec, end_sec: +x.end_sec }
+          : null;
+      return res.status(200).json({ intro: seg(d && d.intro), recap: seg(d && d.recap), outro: seg(d && d.outro) });
+    } catch {
+      return res.status(502).json({ error: "Introdb fetch failed" });
     }
   }
 
