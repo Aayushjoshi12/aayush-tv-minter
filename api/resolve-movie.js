@@ -2442,6 +2442,44 @@ export default async function handler(req, res) {
     }
   }
 
+  // --- Astra (Nova's direct API, 21 Nov 2026): Nova's player is
+  // not just an embed — its Astra API returns direct signed HLS
+  // links (hscow/fcxmb, CORS *), so Server 6 is a native player
+  // now. The API needs Referer/Origin of the Nova player page
+  // (Cloudflare 403s without them), and a browser cannot set
+  // those headers (they are forbidden), so the page asks here.
+  // Only the source list is returned; the page picks the best
+  // source and plays its direct link (no proxy in the play path).
+  if (q.astra) {
+    try {
+      const tmdbId = String(q.astra).trim();
+      const type = q.type === "tv" ? "tv" : "movie";
+      const season = Math.max(1, parseInt(String(q.se || "1"), 10) || 1);
+      const episode = Math.max(1, parseInt(String(q.ep || "1"), 10) || 1);
+      if (!/^\d+$/.test(tmdbId)) {
+        return res.status(400).json({ error: "Bad TMDB id" });
+      }
+      const url =
+        "https://astra0.thatis3word.dev/api/resolve?type=" + type + "&id=" + tmdbId +
+        (type === "tv" ? "&season=" + season + "&episode=" + episode + "&s=" + season + "&e=" + episode : "");
+      const r = await fetchWithTimeout(
+        url,
+        { "User-Agent": UA, Referer: "https://player-4aq.pages.dev/", Origin: "https://player-4aq.pages.dev" },
+        8000
+      );
+      if (!r.ok) {
+        return res.status(502).json({ error: "Astra fetch failed", upstream: r.status });
+      }
+      const d = await r.json();
+      const srcs = ((d && d.success && Array.isArray(d.sources)) ? d.sources : [])
+        .filter((s) => s && s.url && /\.m3u8(\?|$)/i.test(s.url))
+        .map((s) => ({ quality: String(s.quality || ""), url: s.url, provider: String(s.provider || "") }));
+      return res.status(200).json({ sources: srcs });
+    } catch {
+      return res.status(502).json({ error: "Astra fetch failed" });
+    }
+  }
+
   // --- Direct Watch: a native, ad-free stream for the site's own
   // player. Two paths, chosen by the page's &hevc= flag (the page
   // reports whether the browser can decode HEVC):
