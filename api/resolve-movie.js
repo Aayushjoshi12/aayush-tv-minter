@@ -276,11 +276,11 @@ async function nxSources(provider, tmdbId, type, season, episode) {
     // resolver never needs to resolve it.
     const q = nxEncrypt({ ex_lang: true, provider, tmdbId, imdb_id: "", type, season, episode });
     const r = await fetchWithTimeout(`${NX_BASE}/api/sources?q=${q}`, { "User-Agent": UA }, 8000);
-    if (!r.ok) return [];
+    if (!r.ok) return { sources: [], http: r.status, err: "http " + r.status };
     const d = nxDecrypt((await r.json())._hash || "");
     const srcs = (d && d.sources) || [];
-    return Array.isArray(srcs) ? srcs : [];
-  } catch { return []; }
+    return { sources: Array.isArray(srcs) ? srcs : [], http: r.status, err: "" };
+  } catch (e) { return { sources: [], http: 0, err: String((e && e.message) || e).slice(0, 80) }; }
 }
 
 function nxQualityScore(s) {
@@ -2407,7 +2407,17 @@ export default async function handler(req, res) {
       const results = await Promise.all(
         NX_PROVIDERS.map((p) => nxSources(p, parseInt(tmdbId, 10), type, season, episode))
       );
-      const cands = nxCandidates(results);
+      // &debug=1: report what each provider's call returned from
+      // Vercel (status + source count) — no key material, no
+      // payloads. Diagnostic only, for understanding Vercel-side
+      // blocks (Nexus's embed pages already 403 datacentre IPs).
+      if (q.debug) {
+        return res.status(200).json({
+          debug: true,
+          providers: results.map((r, i) => ({ provider: NX_PROVIDERS[i], http: r.http, sources: r.sources.length, err: r.err })),
+        });
+      }
+      const cands = nxCandidates(results.map((r) => r.sources));
       if (!cands.length) return res.status(200).json({ noSource: true });
       // Try m3u8 candidates in rank order, then mp4 ones. Probes
       // run in parallel; the first that answers wins.
