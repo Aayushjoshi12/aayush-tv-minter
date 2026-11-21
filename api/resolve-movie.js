@@ -2185,6 +2185,34 @@ export default async function handler(req, res) {
     }
   }
 
+  // --- Embed liveness check (21 Nov 2026): the Movies page's
+  // parallel probes used to fetch each embed page with no-cors,
+  // which cannot see the HTTP status — so a 404 embed page (Nexus
+  // has no copy of Dhindora, S1 or S2) looked "alive" and the
+  // player sat on its 404 page instead of falling back. The page
+  // asks here instead: this fetches the embed page server-side
+  // and reports its real status. Allowlisted to the three embed
+  // hosts the page uses; anything else is a 400. Only the status
+  // is returned (the page is never proxied through here). A fetch
+  // failure returns status 0 so the page falls back to its own
+  // no-cors reachability check instead of skipping the host.
+  if (q.embedcheck) {
+    try {
+      const target = decodeURIComponent(q.embedcheck);
+      if (
+        !/^https:\/\/nxsha\.space\/embed\/(movie\/\d+|tv\/\d+\/\d+\/\d+)(\?.*)?$/.test(target) &&
+        !/^https:\/\/embedwave\.cc\/embed\/(movie\/\d+|tv\/\d+\/\d+\/\d+)(\?.*)?$/.test(target) &&
+        !/^https:\/\/embed\.vidrift\.net\/embed\/(movie\/\d+|tv\/\d+\/\d+\/\d+)(\?.*)?$/.test(target)
+      ) {
+        return res.status(400).json({ error: "Bad embed URL" });
+      }
+      const r = await fetchWithTimeout(target, { "User-Agent": UA }, 8000);
+      return res.status(200).json({ status: r.status });
+    } catch {
+      return res.status(200).json({ status: 0 });
+    }
+  }
+
   // --- Direct Watch: a native, ad-free stream for the site's own
   // player. Two paths, chosen by the page's &hevc= flag (the page
   // reports whether the browser can decode HEVC):
