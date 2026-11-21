@@ -139,6 +139,8 @@
 // ~3.9MB) and is fetched once at runtime and cached in memory.
 // The chunks (api/modlist-index-N.js) are the build artifacts;
 // the loader (api/modlist-index.js) is unused by the resolver.
+import crypto from "node:crypto";
+
 let MODLIST_INDEX_CACHE = null;
 let MODLIST_INDEX_PROMISE = null;
 const MODLIST_INDEX_URL =
@@ -193,6 +195,149 @@ function fetchWithTimeout(url, headers, timeoutMs, mode) {
 
 const selfUrl = () =>
   "https://aayush-tv-minter.vercel.app/api/resolve-movie";
+
+// ---------- Nexus (nxsha.space) — direct resolver ----------
+//
+// Nexus is Skyflix's default server. Its web player is an iframe
+// embed that fires clickunder ad tabs and shows a robot-check
+// overlay; its API, reverse-engineered 21 Nov 2026, is fully open,
+// so this resolver calls it server-side and hands the page a
+// DIRECT stream instead: no iframe, no ads, and the page's own
+// player (watchdog + fallback) treats it like the other direct
+// servers.
+//
+// Scheme (verified live 21 Nov 2026 — /api/servers decrypts to
+// the 34-provider roster, /api/sources returns direct links for
+// Inception, Michael and Dhindora S2): CryptoJS AES, OpenSSL
+// salted format, one hardcoded passphrase. Encrypt the request
+// payload (plus _req_ts = Date.now() and _req_salt = 10 random
+// base36 chars), URL-safe base64 it, pass as q=. Decrypt the
+// reply's _hash the same way. The key is NEXUS'S OWN public key,
+// published in their public JS bundle (anyone can extract it); it
+// lives here server-side only and is never sent to the browser.
+// If Nexus rotates it, re-extract from their JS: look for the
+// module doing AES.decrypt(f, t) / AES.encrypt(r, t) with a
+// 64-char hex constant just above it. process.env.NEXUS_KEY wins
+// when set, so the key can move to a Vercel env var later.
+const NX_KEY =
+  process.env.NEXUS_KEY ||
+  "38c8cd65d781936f4b9fe1fd985234fd7335699855051abf76ea3493bcfc0120";
+const NX_BASE = "https://nxsha.space";
+
+// EVP_BytesToKey (MD5, 1 iteration) — the CryptoJS passphrase KDF.
+function nxEvpKeyIv(salt) {
+  let key = Buffer.alloc(0), iv = Buffer.alloc(0), prev = Buffer.alloc(0);
+  while (key.length < 32 || iv.length < 16) {
+    const h = crypto.createHash("md5");
+    h.update(prev); h.update(Buffer.from(NX_KEY, "utf8")); h.update(salt);
+    prev = h.digest();
+    if (key.length < 32) key = Buffer.concat([key, prev]).subarray(0, 32);
+    else iv = Buffer.concat([iv, prev]).subarray(0, 16);
+  }
+  return { key, iv };
+}
+function nxEncrypt(obj) {
+  const payload = {
+    ...obj,
+    _req_ts: Date.now(),
+    _req_salt: Array.from({ length: 10 }, () => "abcdefghijklmnopqrstuvwxyz0123456789"[Math.floor(Math.random() * 36)]).join(""),
+  };
+  const salt = crypto.randomBytes(8);
+  const { key, iv } = nxEvpKeyIv(salt);
+  const cipher = crypto.createCipheriv("aes-256-cbc", key, iv);
+  const ct = Buffer.concat([cipher.update(JSON.stringify(payload), "utf8"), cipher.final()]);
+  return Buffer.concat([Buffer.from("Salted__"), salt, ct])
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+}
+function nxDecrypt(urlSafeB64) {
+  let s = String(urlSafeB64 || "").replace(/-/g, "+").replace(/_/g, "/");
+  s += "=".repeat((4 - (s.length % 4)) % 4);
+  const raw = Buffer.from(s, "base64");
+  if (raw.subarray(0, 8).toString() !== "Salted__") throw new Error("bad nx payload");
+  const salt = raw.subarray(8, 16), ct = raw.subarray(16);
+  const { key, iv } = nxEvpKeyIv(salt);
+  const decipher = crypto.createDecipheriv("aes-256-cbc", key, iv);
+  return JSON.parse(Buffer.concat([decipher.update(ct), decipher.final()]).toString("utf8"));
+}
+
+// Web providers worth asking, best first. nitro is the player's
+// default but returns 0 sources for some titles (Dhindora), so
+// the order is a preference, not a guarantee — every provider is
+// asked in parallel and the best answering source wins.
+const NX_PROVIDERS = ["nitro", "rive-citadel", "castle", "vixolity", "streamflix", "purstream", "awsind", "watchout", "ophim", "mahalala"];
+
+async function nxSources(provider, tmdbId, type, season, episode) {
+  try {
+    // imdb_id is accepted but ignored by the API (verified: an
+    // empty or dummy imdb_id returns the same sources), so the
+    // resolver never needs to resolve it.
+    const q = nxEncrypt({ ex_lang: true, provider, tmdbId, imdb_id: "", type, season, episode });
+    const r = await fetchWithTimeout(`${NX_BASE}/api/sources?q=${q}`, { "User-Agent": UA }, 8000);
+    if (!r.ok) return [];
+    const d = nxDecrypt((await r.json())._hash || "");
+    const srcs = (d && d.sources) || [];
+    return Array.isArray(srcs) ? srcs : [];
+  } catch { return []; }
+}
+
+function nxQualityScore(s) {
+  const t = String(s.quality || s.label || "");
+  const m = /(\d{3,4})\s*p/i.exec(t);
+  if (m) return parseInt(m[1], 10);
+  if (/4k|2160/i.test(t)) return 2160;
+  return 720; // "Auto" / unlabeled (e.g. streamflix mp4): assume HD
+}
+function nxLangScore(s) {
+  const t = String(s.quality || s.label || "");
+  if (/english/i.test(t)) return 0;
+  if (/hindi|tamil|telugu|bengali|malayalam|kannada|punjabi|marathi/i.test(t)) return 2;
+  return 1;
+}
+
+// Collect direct (non-embed) candidates across all providers:
+// org_uri is the un-proxied original — prefer it when present
+// (streamflix's org_uri is the direct MKV file).
+function nxCandidates(results) {
+  const out = [];
+  results.forEach((list, pi) => {
+    for (const s of list || []) {
+      if (!s || s.isEmbed) continue;
+      const url = s.org_uri || s.url;
+      if (!url || !/^https:\/\//.test(url)) continue;
+      const kind = /\.m3u8(\?|$)/i.test(url) ? "m3u8" : /\.(mp4|mkv)(\?|$)/i.test(url) ? "mp4" : null;
+      if (!kind) continue;
+      out.push({ url, kind, provider: s.provider || NX_PROVIDERS[pi], label: s.label || s.quality || "", pi });
+    }
+  });
+  out.sort((a, b) => a.pi - b.pi || nxQualityScore(b) - nxQualityScore(a) || nxLangScore(a) - nxLangScore(b));
+  return out;
+}
+
+// Probe a candidate from here (Vercel): a direct stream must
+// answer and look like what it claims. Returns the manifest text
+// for a good m3u8, true for a good mp4, null otherwise. m3u8 is a
+// plain GET expecting 200 + #EXTM3U (the manifest is served to
+// the page through the blob-URL trick, so no CORS is needed on
+// the manifest itself; the tap-test decides whether its segments
+// play in Chrome). mp4 is a ranged GET expecting 206/200 + a
+// video content-type.
+async function nxProbe(c) {
+  try {
+    const headers = { "User-Agent": UA };
+    if (c.kind === "mp4") headers.Range = "bytes=0-2047";
+    const r = await fetchWithTimeout(c.url, headers, 6000);
+    if (!r.ok && r.status !== 206) return null;
+    if (c.kind === "m3u8") {
+      const text = await r.text();
+      return text.startsWith("#EXTM3U") ? text : null;
+    }
+    const ct = (r.headers.get("content-type") || "").toLowerCase();
+    return r.status === 206 || ct.includes("video") || ct.includes("octet-stream") ? true : null;
+  } catch { return null; }
+}
 
 // Direct Watch cache: the Orion hash + master manifest are stable
 // per title, so cache the rewritten master per (tmdbId, type,
@@ -2237,6 +2382,52 @@ export default async function handler(req, res) {
       return res.status(200).json({ status: r.status });
     } catch {
       return res.status(200).json({ status: 0 });
+    }
+  }
+
+  // --- Nexus direct: a native, ad-free stream from Skyflix's
+  // default server (nxsha.space), via its own API instead of the
+  // iframe embed. The page's Server 2 calls this instead of
+  // framing the embed — no clickunder ads, no robot-check overlay,
+  // and the page's watchdog + fallback treat it like the other
+  // direct servers. Returns the rewritten master manifest (m3u8)
+  // like ?watch=, or {url, kind:"mp4"} for a direct file, or
+  // {noSource:true} when no provider has a copy. Links are signed
+  // and expire (~2h) — resolve fresh per play, never cache the
+  // result.
+  if (q.nexus) {
+    try {
+      const tmdbId = String(q.nexus).trim();
+      const type = q.type === "tv" ? "tv" : "movie";
+      const season = Math.max(1, parseInt(String(q.se || "1"), 10) || 1);
+      const episode = Math.max(1, parseInt(String(q.ep || "1"), 10) || 1);
+      if (!/^\d+$/.test(tmdbId)) {
+        return res.status(400).json({ error: "Bad TMDB id" });
+      }
+      const results = await Promise.all(
+        NX_PROVIDERS.map((p) => nxSources(p, parseInt(tmdbId, 10), type, season, episode))
+      );
+      const cands = nxCandidates(results);
+      if (!cands.length) return res.status(200).json({ noSource: true });
+      // Try m3u8 candidates in rank order, then mp4 ones. Probes
+      // run in parallel; the first that answers wins.
+      for (const kind of ["m3u8", "mp4"]) {
+        const pool = cands.filter((c) => c.kind === kind).slice(0, 4);
+        if (!pool.length) continue;
+        const probed = await Promise.all(
+          pool.map((c) => nxProbe(c).then((r) => (r ? { c, r } : null)))
+        );
+        const winner = probed.find(Boolean);
+        if (!winner) continue;
+        if (kind === "mp4") {
+          return res.status(200).json({ url: winner.c.url, kind: "mp4", provider: winner.c.provider, label: winner.c.label });
+        }
+        res.setHeader("Content-Type", "application/vnd.apple.mpegurl");
+        return res.status(200).send(rewriteManifestText(winner.r, winner.c.url, ""));
+      }
+      return res.status(200).json({ noSource: true });
+    } catch {
+      return res.status(200).json({ noSource: true });
     }
   }
 
