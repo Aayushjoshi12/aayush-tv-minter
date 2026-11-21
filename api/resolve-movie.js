@@ -2337,8 +2337,8 @@ export default async function handler(req, res) {
   // has no copy of Dhindora, S1 or S2) looked "alive" and the
   // player sat on its 404 page instead of falling back. The page
   // asks here instead: this fetches the embed page server-side
-  // and reports its real status. Allowlisted to the three embed
-  // hosts the page uses; anything else is a 400. Only the status
+  // and reports its real status. Allowlisted to the embed hosts
+  // the page uses; anything else is a 400. Only the status
   // is returned (the page is never proxied through here). A fetch
   // failure returns status 0 so the page falls back to its own
   // no-cors reachability check instead of skipping the host.
@@ -2348,6 +2348,7 @@ export default async function handler(req, res) {
       if (
         !/^https:\/\/nxsha\.space\/embed\/(movie\/\d+|tv\/\d+\/\d+\/\d+)(\?.*)?$/.test(target) &&
         !/^https:\/\/embedwave\.cc\/embed\/(movie\/\d+|tv\/\d+\/\d+\/\d+)(\?.*)?$/.test(target) &&
+        !/^https:\/\/cinesrc\.st\/embed\/(movie\/\d+|tv\/\d+)(\?.*)?$/.test(target) &&
         !/^https:\/\/embed\.vidrift\.net\/embed\/(movie\/\d+|tv\/\d+\/\d+\/\d+)(\?.*)?$/.test(target) &&
         !/^https:\/\/vidgod\.site\/(movie\/\d+|tv\/\d+\/\d+\/\d+)(\?.*)?$/.test(target) &&
         !/^https:\/\/player-4aq\.pages\.dev\/embed\/(movie\/\d+|tv\/\d+\/\d+\/\d+)(\?.*)?$/.test(target) &&
@@ -2367,6 +2368,7 @@ export default async function handler(req, res) {
           Referer: {
             "nxsha.space": "https://skyflix.me/",
             "embedwave.cc": "https://embedwave.cc/",
+            "cinesrc.st": "https://cinesrc.st/",
             "embed.vidrift.net": "https://embed.vidrift.net/",
             "vidgod.site": "https://skyflix.me/",
             "player-4aq.pages.dev": "https://skyflix.me/",
