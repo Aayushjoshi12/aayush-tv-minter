@@ -2202,7 +2202,10 @@ export default async function handler(req, res) {
       if (
         !/^https:\/\/nxsha\.space\/embed\/(movie\/\d+|tv\/\d+\/\d+\/\d+)(\?.*)?$/.test(target) &&
         !/^https:\/\/embedwave\.cc\/embed\/(movie\/\d+|tv\/\d+\/\d+\/\d+)(\?.*)?$/.test(target) &&
-        !/^https:\/\/embed\.vidrift\.net\/embed\/(movie\/\d+|tv\/\d+\/\d+\/\d+)(\?.*)?$/.test(target)
+        !/^https:\/\/embed\.vidrift\.net\/embed\/(movie\/\d+|tv\/\d+\/\d+\/\d+)(\?.*)?$/.test(target) &&
+        !/^https:\/\/vidgod\.site\/(movie\/\d+|tv\/\d+\/\d+\/\d+)(\?.*)?$/.test(target) &&
+        !/^https:\/\/player-4aq\.pages\.dev\/embed\/(movie\/\d+|tv\/\d+\/\d+\/\d+)(\?.*)?$/.test(target) &&
+        !/^https:\/\/nhdapi\.com\/(movie\/\d+|tv\/\d+\/\d+\/\d+)(\?.*)?$/.test(target)
       ) {
         return res.status(400).json({ error: "Bad embed URL" });
       }
@@ -2210,14 +2213,24 @@ export default async function handler(req, res) {
         target,
         {
           "User-Agent": UA,
-          // Send the embed's own parent site as Referer: some hosts
-          // gate on it, and without it Vercel gets a 403 instead
-          // of the page's real status.
+          // Send the embed's own parent site as Referer, plus
+          // browser-like headers: some hosts gate on them, and
+          // without them Vercel gets a 403 instead of the page's
+          // real status (Nexus 404s Dhindora in a browser but
+          // 403s Vercel).
           Referer: {
             "nxsha.space": "https://skyflix.me/",
             "embedwave.cc": "https://embedwave.cc/",
             "embed.vidrift.net": "https://embed.vidrift.net/",
+            "vidgod.site": "https://skyflix.me/",
+            "player-4aq.pages.dev": "https://skyflix.me/",
+            "nhdapi.com": "https://skyflix.me/",
           }[new URL(target).hostname] || "https://aayushlife.live/",
+          Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+          "Accept-Language": "en-US,en;q=0.9",
+          "Sec-Fetch-Dest": "iframe",
+          "Sec-Fetch-Mode": "navigate",
+          "Sec-Fetch-Site": "cross-site",
         },
         8000
       );
