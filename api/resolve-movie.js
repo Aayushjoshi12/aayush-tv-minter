@@ -2206,7 +2206,21 @@ export default async function handler(req, res) {
       ) {
         return res.status(400).json({ error: "Bad embed URL" });
       }
-      const r = await fetchWithTimeout(target, { "User-Agent": UA }, 8000);
+      const r = await fetchWithTimeout(
+        target,
+        {
+          "User-Agent": UA,
+          // Send the embed's own parent site as Referer: some hosts
+          // gate on it, and without it Vercel gets a 403 instead
+          // of the page's real status.
+          Referer: {
+            "nxsha.space": "https://skyflix.me/",
+            "embedwave.cc": "https://embedwave.cc/",
+            "embed.vidrift.net": "https://embed.vidrift.net/",
+          }[new URL(target).hostname] || "https://aayushlife.live/",
+        },
+        8000
+      );
       return res.status(200).json({ status: r.status });
     } catch {
       return res.status(200).json({ status: 0 });
