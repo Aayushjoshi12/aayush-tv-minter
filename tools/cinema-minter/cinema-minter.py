@@ -39,7 +39,7 @@ log = logging.getLogger("cinema-minter")
 
 MIRRORS = [
     "https://1xlite-6229051.com",
-    "https://1xlite-6428119.com",
+    "https://1xlite-61831.com",
 ]
 CINEMA_PATH = "/cinema"
 HDF_JS = "/hd-api/external/assets/hdf.js"
