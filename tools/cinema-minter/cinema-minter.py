@@ -10,19 +10,42 @@ REVISED 22 Nov 2026 — the guest-token path is DEAD. Findings:
 - tvbetstream (all edges, all ports) is unreachable from Nepal, so there
   is no token-free stream source for Nepal viewers.
 
-How it works now
-----------------
-1. The minter logs in DIRECTLY via the login API (no page UI — the VM's
-   headless browser gets a degraded 1xBet page with no login form).
+VM LOGIN IS DEAD (proven 22 Nov 2026, two tests):
+- The VM's API login returns only a PARTIAL session (SESSION + auid);
+  token/refresh returns nothing, even with a device UUID (che_g /
+  fatman_uuid) sent. No uhash / access_token / authenticated.
+- A real (stealth) browser on the VM gets a DEGRADED page with zero
+  input fields — no login form at all.
+  The server distrusts the VM's datacentre IP. No free VM login works.
+
+CHROME MINTING (live 22 Nov 2026) — the working free route:
+- The user's Chrome IS logged in (full session: uhash, access_token
+  557-char JWT, authenticated) and the access_token is readable from
+  document.cookie in the 1xBet tab (not httpOnly).
+- The minter mints THROUGH his Chrome: it calls the browser-driver
+  backend (127.0.0.1:8802) to run JS in the 1xBet tab; the JS reads the
+  access_token from document.cookie and POSTs /cinema from the page
+  (same-origin, cookies sent automatically), storing the result in
+  window.__cinemaMint. The minter polls and returns the stream URL.
+  The access_token NEVER leaves his Chrome — only the minted URL does.
+  Proven 22 Nov: cricket DR_4_21072111 minted a direct edge14.xmediaget
+  m3u8 (ui=1887996073, the spare account) from his Chrome.
+- Limitation: works ONLY while his Chrome is open with a 1xBet tab
+  (the minter opens one in the background if none exists). Not 24/7.
+- The minter holds the browser-driver API key (DRIVER_API_KEY in
+  /opt/cinema/.env, copied from /opt/browser-driver/.env) so it can call
+  the driver backend on localhost. The key stays in a mode-600 file.
+
+How the direct /cinema path works (kept for reference):
+1. The minter logs in DIRECTLY via the login API (no page UI).
    POST /web-api/api/internal/office/account/login with the service
    account credentials (ONEX_USER / ONEX_PASS from /opt/cinema/.env).
-   That returns 204 + a session cookie (uhash, 32 chars) — NOT the token
-   /cinema wants. A second call, POST
-   /web-api/api/internal/user/token/refresh, returns 204 + the
-   access_token cookie (a ~557-char JWT). That JWT is what /cinema takes.
+   That returns 204 + a session cookie — NOT the token /cinema wants.
+   A second call, POST /web-api/api/internal/user/token/refresh,
+   returns 204 + the access_token cookie (a ~557-char JWT).
    (Both endpoints found 22 Nov 2026 in the site's shared base-app JS
    chunk; the browser's TokenService does exactly this two-step flow.)
-   Cookies persist in a shared jar across login -> refresh -> cinema.
+   THIS PATH DOES NOT WORK FROM THE VM (partial session only).
 2. When a stream is requested, the minter uses the current access_token
    and POSTs /cinema with it + the full DR_ video id.
 3. /cinema answers in one of three shapes:
@@ -34,14 +57,6 @@ How it works now
      returned as a clear error.
 4. The access_token lives ~20 min. If /cinema says the token is invalid,
    the minter re-logs in via the API to get a fresh token.
-
-The login endpoint was found 22 Nov 2026 by reading the 1xBet welcome-app
-JS bundle in the user's Chrome (sys-welcome-app entry-3c2d09ee14.js):
-  x({url:"/web-api/api/internal/office/account/login",method:"POST",
-     isUseXAuth:!0,expectedParams:{...RR(),...vR()}})
-The token/refresh endpoint was found the same day in the shared base-app
-chunk (__shared_base-app_92d18dd216.js), which also holds the TokenService
-(useTokenService/fetchToken). The browser is no longer used for login.
 
 Ports: 8803 (Nexus 8801, browser-driver 8802). Caddy route: /cinema-api/
 """
@@ -314,15 +329,228 @@ async def _mint_cinema(video_id, access_token, cookies=None):
             "error": f"unexpected cinema response: {str(payload)[:200]}"}
 
 
+# ---------------------------------------------------------------------------
+# Chrome minting (the working free route — the VM cannot log in, his Chrome
+# can). The minter drives his Chrome through the browser-driver backend on
+# localhost (127.0.0.1:8802). The access_token never leaves his Chrome:
+# the JS reads it from document.cookie and POSTs /cinema from the page;
+# only the minted URL comes back.
+# ---------------------------------------------------------------------------
+
+DRIVER_BASE = os.environ.get("DRIVER_BASE", "http://127.0.0.1:8802")
+DRIVER_TIMEOUT_S = 30
+
+
+def _read_driver_key():
+    """Read DRIVER_API_KEY (the browser-driver Muse key) from env or the
+    creds file. The deploy step copies it from /opt/browser-driver/.env."""
+    key = os.environ.get("DRIVER_API_KEY")
+    if key:
+        return key
+    try:
+        with open(CREDS_FILE) as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = line.split("=", 1)
+                if k.strip() == "DRIVER_API_KEY":
+                    return v.strip().strip('"').strip("'")
+    except FileNotFoundError:
+        pass
+    return ""
+
+
+def _driver_call(action, args):
+    """POST one command to the browser-driver backend. Returns the parsed
+    JSON body (or an error dict). Raises on transport failure."""
+    key = _read_driver_key()
+    if not key:
+        raise RuntimeError(
+            "no browser-driver key: set DRIVER_API_KEY in "
+            f"{CREDS_FILE} (copied from /opt/browser-driver/.env)")
+    body = json.dumps({"action": action, "args": args}).encode()
+    req = urllib.request.Request(
+        DRIVER_BASE + "/command", data=body, method="POST")
+    req.add_header("Content-Type", "application/json")
+    req.add_header("X-API-Key", key)
+    try:
+        with urllib.request.urlopen(req, timeout=DRIVER_TIMEOUT_S) as resp:
+            return json.loads(resp.read().decode(errors="replace") or "{}")
+    except urllib.error.HTTPError as e:
+        raw = e.read().decode(errors="replace")
+        try:
+            return json.loads(raw or "{}")
+        except Exception:
+            return {"ok": False, "error": f"driver_http_{e.code}",
+                    "body": raw[:200]}
+    except Exception as e:
+        raise RuntimeError(f"browser-driver call failed: {e}")
+
+
+def _driver_eval(tab_id, js):
+    """Run JS in a tab via evaluate_js. Returns the result value string
+    (or raises on error). evaluate_js does NOT await promises, so async
+    work must fire-and-store in a window global and be read back."""
+    res = _driver_call("evaluate_js",
+                       {"tabId": tab_id, "js": js, "confirm": True})
+    if isinstance(res, dict) and res.get("detail") == "extension_not_connected":
+        raise RuntimeError("browser-driver extension not connected "
+                           "(Chrome closed or extension not loaded)")
+    if isinstance(res, dict) and res.get("detail") == "invalid_api_key":
+        raise RuntimeError("browser-driver key rejected (invalid_api_key)")
+    result = (res or {}).get("result") or {}
+    if isinstance(result, dict) and result.get("error"):
+        raise RuntimeError(f"page JS error: {result['error']}")
+    value = result.get("value") if isinstance(result, dict) else result
+    return value if isinstance(value, str) else json.dumps(value)
+
+
+def _find_1xbet_tab():
+    """Return the tab id of an open 1xBet tab, or None."""
+    res = _driver_call("list_tabs", {})
+    tabs = (res or {}).get("result") or []
+    for t in tabs:
+        url = (t or {}).get("url") or ""
+        if "1xlite" in url or "1xbet" in url.lower():
+            return t.get("tab_id")
+    return None
+
+
+def _open_1xbet_tab():
+    """Open a 1xBet tab in the background (does not steal focus)."""
+    res = _driver_call("open_tab",
+                       {"url": "https://1xlite-6229051.com/en",
+                        "active": False, "confirm": True})
+    tab = (res or {}).get("result") or {}
+    tab_id = tab.get("tab_id")
+    if not tab_id:
+        raise RuntimeError(f"could not open a 1xBet tab: {str(res)[:200]}")
+    return tab_id
+
+
+_MINT_FIRE_JS = """(() => {
+  const m = document.cookie.match(/(?:^|;\\s*)access_token=([^;]*)/);
+  const token = m ? m[1] : '';
+  if (!token) { window.__cinemaMint = JSON.stringify({error: 'no access_token in cookie — not logged in to 1xBet in this Chrome'}); return 'no-token'; }
+  window.__cinemaMint = JSON.stringify({pending: true});
+  fetch('/cinema', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      AppId: 101, AppVer: '1025', VpcVer: 'v3.0.2', CoreVer: 'v3.0.2',
+      Language: 'en', OS: 'Windows',
+      Token: token, AccessToken: token,
+      VideoId: '__VIDEO_ID__', Record: false, ApiVer: 'v1.1.0'
+    })
+  }).then(r => r.text()).then(t => { window.__cinemaMint = t; })
+    .catch(e => { window.__cinemaMint = JSON.stringify({error: 'cinema fetch failed: ' + e.message}); });
+  return 'started';
+})()"""
+
+
+def _mint_via_chrome(video_id, wait_s=20):
+    """Mint a stream URL through the user's Chrome. Returns the same
+    classified dict as _mint_cinema. Raises on driver/Chrome failure."""
+    tab_id = _find_1xbet_tab()
+    if not tab_id:
+        tab_id = _open_1xbet_tab()
+        # Let the 1xBet SPA mount before running the fetch.
+        time.sleep(8)
+    js = _MINT_FIRE_JS.replace("__VIDEO_ID__", video_id)
+    started = _driver_eval(tab_id, js)
+    if started == "no-token":
+        raise RuntimeError("Chrome is not logged in to 1xBet "
+                           "(no access_token cookie in the 1xBet tab)")
+    # Poll until the fetch completes (window.__cinemaMint stops being
+    # {"pending": true}) or we time out.
+    deadline = time.time() + wait_s
+    raw = ""
+    while time.time() < deadline:
+        raw = _driver_eval(
+            tab_id,
+            "(() => { return window.__cinemaMint || ''; })()")
+        if raw and '"pending":true' not in raw and '"pending": true' not in raw:
+            break
+        time.sleep(2)
+    if not raw:
+        raise RuntimeError("Chrome mint timed out (no result from the "
+                           "1xBet tab after %ds)" % wait_s)
+    if '"pending"' in raw:
+        raise RuntimeError("Chrome mint timed out (cinema fetch still "
+                           "pending after %ds)" % wait_s)
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return {"kind": "error", "error": f"unparsable cinema reply: {raw[:200]}"}
+    if isinstance(payload, dict) and payload.get("error"):
+        return {"kind": "error", "error": str(payload["error"])[:200]}
+    if payload.get("URL"):
+        return {"kind": "direct", "url": payload["URL"],
+                "fullscreenAllowed": payload.get("FullscreenAllowed")}
+    if payload.get("ExternalAuthURL"):
+        return {"kind": "external", "providerId": payload.get("ProviderID"),
+                "externalAuthUrl": payload.get("ExternalAuthURL"),
+                "providerAccessToken": payload.get("AccessToken"),
+                "fullscreenAllowed": payload.get("FullscreenAllowed")}
+    if payload.get("Error"):
+        return {"kind": "error", "error": payload.get("Error"),
+                "errorCode": payload.get("ErrorCode")}
+    return {"kind": "error",
+            "error": f"unexpected cinema response: {str(payload)[:200]}"}
+
+
 @app.get("/health")
 async def health():
     user, _ = _read_creds()
     return {
         "ok": True,
-        "mode": "account",
+        "mode": "chrome",
         "creds_configured": bool(user),
+        "driver_key_configured": bool(_read_driver_key()),
         "mirror": _mirror(),
     }
+
+
+@app.get("/stream-chrome")
+async def stream_chrome(videoId: str):
+    """Mint a stream URL THROUGH the user's Chrome (the working free
+    route — the VM cannot log in, his Chrome can).
+
+    The minter drives his Chrome via the browser-driver: the 1xBet tab
+    POSTs /cinema from the page using the access_token in its cookie.
+    The token never leaves his Chrome; only the minted URL is returned.
+    Requires his Chrome to be open (a 1xBet tab is opened in the
+    background if none exists) and logged in to 1xBet.
+
+    Example: /stream-chrome?videoId=DR_4_21072111
+    Returns {"kind":"direct","url":...} for a native-playable stream,
+    {"kind":"external",...} when the match goes through an external
+    provider, or a 502 with a clear error.
+    """
+    if not videoId:
+        raise HTTPException(400, "videoId is required, e.g. DR_4_21072111")
+    video_id = videoId if videoId.startswith("DR_") else videoId
+    try:
+        result = await asyncio.to_thread(_mint_via_chrome, video_id)
+    except Exception as e:
+        raise HTTPException(502, f"Chrome mint failed: {e}")
+    if result["kind"] == "direct":
+        return {"videoId": video_id, "kind": "direct",
+                "url": result["url"],
+                "fullscreenAllowed": result.get("fullscreenAllowed"),
+                "via": "chrome"}
+    if result["kind"] == "external":
+        return {"videoId": video_id, "kind": "external",
+                "providerId": result.get("providerId"),
+                "externalAuthUrl": result.get("externalAuthUrl"),
+                "fullscreenAllowed": result.get("fullscreenAllowed"),
+                "via": "chrome",
+                "note": "external provider (Perform/Opta): follow the "
+                        "externalAuthUrl with the provider token held "
+                        "server-side"}
+    raise HTTPException(502, f"Chrome mint failed: {result.get('error')} "
+                             f"(code {result.get('errorCode')})")
 
 
 @app.get("/stream")
@@ -334,6 +562,10 @@ async def stream(videoId: str):
     Returns {"kind":"direct","url":...} for a native-playable stream,
     {"kind":"external",...} when the match goes through an external
     provider (Perform/Opta), or a 502 with a clear error.
+
+    NOTE: this direct path does NOT work from the VM (the server only
+    grants the VM a partial session). Use /stream-chrome instead, which
+    mints through the user's Chrome.
     """
     if not videoId:
         raise HTTPException(400, "videoId is required, e.g. DR_4_21067736")
@@ -374,7 +606,9 @@ async def stream(videoId: str):
 
 @app.get("/token")
 async def token():
-    """Debug: report whether a live session token is available (no value)."""
+    """Debug: report whether a live session token is available via the
+    DIRECT (VM) login (no value). NOTE: the direct login is known-dead
+    from the VM (partial session only) — use /stream-chrome instead."""
     try:
         tok, _cookies = await _ensure_token()
         return {"token_present": bool(tok),
