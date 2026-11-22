@@ -54,7 +54,7 @@ def _device_uuid():
 
 def _cookie_summary(resp):
     out = {}
-    for name, value in resp.headers.get_list("set-cookie"):
+    for value in resp.headers.get_list("set-cookie"):
         # value looks like "NAME=...; Path=/; ..."
         pair = value.split(";", 1)[0]
         if "=" in pair:
@@ -90,7 +90,7 @@ def main():
         result["login_cookies"] = _cookie_summary(login)
         # Carry the session cookies forward, keep the device UUID.
         jar = dict(cookies)
-        for name, value in login.headers.get_list("set-cookie"):
+        for value in login.headers.get_list("set-cookie"):
             pair = value.split(";", 1)[0]
             if "=" in pair:
                 k, v = pair.split("=", 1)
