@@ -94,11 +94,13 @@ async def _run_verify_in_browser():
     mirror = _mirror()
     js = """
     (async () => {
-      const out = {stage: 'start'};
+      const out = {stage: 'start', pageUrl: location.href, pageOrigin: location.origin};
       try {
         const r = await fetch('/hd-api/external/assets/hdf.js');
         out.hdfStatus = r.status;
+        out.hdfOk = r.ok;
         const txt = await r.text();
+        out.hdfLen = txt.length;
         eval(txt);
         out.hasHDF = typeof window.HDF !== 'undefined';
         const res = await window.HDF.exec();
@@ -106,6 +108,7 @@ async def _run_verify_in_browser():
         out.keys = res ? Object.keys(res) : [];
         out.hasToken = !!(res && res.token);
         out.expiresAt = res ? res.expiresAt : 0;
+        out.dataLen = res && res.data ? String(res.data).length : 0;
         if (res && res.token) { window.__minterToken = res.token; }
         if (res && res.error) { out.error = String(res.error).slice(0, 200); }
       } catch (e) { out.error = String(e).slice(0, 200); }
@@ -137,6 +140,8 @@ async def _run_verify_in_browser():
                 "{get: () => undefined});")
             await page.goto(mirror + "/", wait_until="domcontentloaded",
                             timeout=60000)
+            log.info("goto %s -> url=%s title=%s", mirror,
+                     page.url, (await page.title())[:80])
             await page.evaluate(js)
             # The challenge takes ~2.5s; give it time, then read the result.
             for _ in range(30):
@@ -150,6 +155,8 @@ async def _run_verify_in_browser():
             else:
                 raise RuntimeError("verify flow did not finish in time")
             if not info.get("hasToken"):
+                log.warning("verify flow result: %s",
+                            json.dumps(info)[:500])
                 raise RuntimeError(
                     "verify returned no token: " +
                     str(info.get("error", info.get("keys"))))
