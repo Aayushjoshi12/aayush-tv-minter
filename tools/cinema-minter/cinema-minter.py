@@ -72,6 +72,7 @@ import urllib.request
 import urllib.error
 
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 logging.basicConfig(level=logging.INFO)
@@ -91,6 +92,17 @@ CREDS_FILE = os.environ.get("CINEMA_CREDS_FILE", "/opt/cinema/.env")
 TOKEN_REFRESH_MARGIN_S = 60
 
 app = FastAPI(title="cinema-minter")
+
+# stream.html on aayushlife.live calls this from the browser — without
+# CORS headers the browser blocks the response ("Failed to fetch") and
+# the page hangs on "Getting the stream link…". Allow any origin,
+# same as the other public resolvers (onexbet proxy, Bigg Boss proxy).
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET", "OPTIONS"],
+    allow_headers=["*"],
+)
 
 _mirror_idx = 0
 _session_lock = asyncio.Lock()
