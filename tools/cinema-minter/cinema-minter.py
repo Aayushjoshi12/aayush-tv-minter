@@ -47,7 +47,6 @@ Ports: 8803 (Nexus 8801, browser-driver 8802). Caddy route: /cinema-api/
 """
 
 import asyncio
-import http.cookiejar
 import json
 import logging
 import os
@@ -111,28 +110,42 @@ def _read_creds():
 LOGIN_PATH = "/web-api/api/internal/office/account/login"
 TOKEN_REFRESH_PATH = "/web-api/api/internal/user/token/refresh"
 
-# Cached access token + expiry (token lives ~20 min).
+# Cached access token + expiry (token lives ~20 min). The session cookies
+# from login are cached alongside it — /cinema is called with both the
+# AccessToken and the session cookies, exactly as the browser does.
 _cached_token = ""
+_cached_cookies = {}
 _cached_token_at = 0.0
 TOKEN_TTL_S = 15 * 60
 
-# Shared cookie jar: the login sets a session cookie (uhash) and the
-# token/refresh call sets the access_token JWT cookie. Cookies must persist
-# across the login -> refresh -> cinema calls.
-_cookie_jar = http.cookiejar.CookieJar()
-_opener = urllib.request.build_opener(
-    urllib.request.HTTPCookieProcessor(_cookie_jar))
+
+def _parse_set_cookies(headers):
+    """Parse Set-Cookie headers into {name: value}. Logs names + lengths
+    only (never values) so a failed login is diagnosable."""
+    out = {}
+    if headers is None:
+        return out
+    for c in (headers.get_all("Set-Cookie") or []):
+        # First name=value pair, before any ';' attributes.
+        first = c.split(";", 1)[0]
+        if "=" in first:
+            name, value = first.split("=", 1)
+            out[name.strip()] = urllib.parse.unquote(value.strip())
+    if out:
+        log.info("Set-Cookie: %s",
+                 ", ".join(f"{k}:{len(v)}" for k, v in out.items()))
+    else:
+        log.info("Set-Cookie: none")
+    return out
 
 
-def _cookie_value(name):
-    """Read one cookie's value from the shared jar ('' if absent)."""
-    for c in _cookie_jar:
-        if c.name == name:
-            return c.value
-    return ""
+def _cookie_header(cookies):
+    """Build a Cookie request header from a {name: value} dict."""
+    return "; ".join(f"{k}={v}" for k, v in cookies.items())
 
 
-def _http_json(method, url, body=None, timeout=30, extra_headers=None):
+def _http_json(method, url, body=None, timeout=30, extra_headers=None,
+               cookies=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
@@ -143,11 +156,13 @@ def _http_json(method, url, body=None, timeout=30, extra_headers=None):
     req.add_header("Accept", "application/json, text/plain, */*")
     req.add_header("Origin", _mirror())
     req.add_header("Referer", _mirror() + "/")
+    if cookies:
+        req.add_header("Cookie", _cookie_header(cookies))
     if extra_headers:
         for k, v in extra_headers.items():
             req.add_header(k, v)
     try:
-        with _opener.open(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode(errors="replace")
             try:
                 payload = json.loads(raw) if raw.strip() else {}
@@ -211,50 +226,57 @@ def _api_login():
             f"{CREDS_FILE} (or env). The account must be a dedicated 1xBet "
             "account for this minter, not the user's personal account.")
     mirror = _mirror()
-    # Step 1: login. Clears any stale cookies first.
-    _cookie_jar.clear()
+    # Step 1: login. Parse the session cookies from the response headers
+    # (the CookieJar proved unreliable here — the login sets cookies the
+    # jar drops, so cookies are carried explicitly).
     body = {"login": user, "password": password}
     status, payload, headers = _http_json(
         "POST", mirror + LOGIN_PATH, body, timeout=30)
     log.info("login POST -> %s, payload keys: %s",
              status, list(payload.keys()) if isinstance(payload, dict) else type(payload))
-    session = _cookie_value("uhash") or _cookie_value("sh.session.id")
+    cookies = _parse_set_cookies(headers)
+    session = cookies.get("uhash") or cookies.get("sh.session.id") or \
+        cookies.get("session")
     log.info("login session cookie present: %s", bool(session))
     # Step 2: refresh the access token (needs the session cookie).
     status2, payload2, headers2 = _http_json(
-        "POST", mirror + TOKEN_REFRESH_PATH, {}, timeout=30)
+        "POST", mirror + TOKEN_REFRESH_PATH, {}, timeout=30,
+        cookies=cookies)
     log.info("token/refresh POST -> %s", status2)
-    token = _cookie_value("access_token")
+    cookies2 = _parse_set_cookies(headers2)
+    cookies.update(cookies2)
+    token = cookies.get("access_token")
     if token and len(token) > 100:
         log.info("token/refresh OK (access_token len %d)", len(token))
-        return token
-    # Fall back to anything the responses carried (body or Set-Cookie).
+        return token, cookies
+    # Fall back to anything the responses carried in the body.
     token = _extract_token(status2, payload2, headers2)
     if token and len(token) > 100:
-        return token
+        return token, cookies
     token = _extract_token(status, payload, headers)
     if token and len(token) > 100:
-        return token
+        return token, cookies
     raise RuntimeError(
         f"login OK (session={bool(session)}) but no access_token JWT after "
-        f"token/refresh (refresh HTTP {status2}); access_token cookie "
-        f"len={len(_cookie_value('access_token'))}")
+        f"token/refresh (refresh HTTP {status2}); cookies after login: "
+        f"{sorted(cookies.keys())}, after refresh: {sorted(cookies2.keys())}")
 
 
 async def _ensure_token():
-    """Return a live access_token, logging in via the API if needed."""
-    global _cached_token, _cached_token_at
+    """Return (access_token, session_cookies), logging in if needed."""
+    global _cached_token, _cached_cookies, _cached_token_at
     async with _session_lock:
         if (_cached_token and
                 time.time() - _cached_token_at < TOKEN_TTL_S):
-            return _cached_token
-        token = await asyncio.to_thread(_api_login)
+            return _cached_token, _cached_cookies
+        token, cookies = await asyncio.to_thread(_api_login)
         _cached_token = token
+        _cached_cookies = cookies
         _cached_token_at = time.time()
-        return token
+        return token, cookies
 
 
-async def _mint_cinema(video_id, access_token):
+async def _mint_cinema(video_id, access_token, cookies=None):
     """POST /cinema and classify the response."""
     body = {
         "AppId": 101, "AppVer": "1025",
@@ -263,7 +285,8 @@ async def _mint_cinema(video_id, access_token):
         "VideoId": video_id, "Record": False, "ApiVer": "v1.1.0",
     }
     status, payload, _headers = await asyncio.to_thread(
-        _http_json, "POST", _mirror() + CINEMA_PATH, body)
+        _http_json, "POST", _mirror() + CINEMA_PATH, body,
+        cookies=cookies)
     if status != 200:
         return {"kind": "error", "status": status,
                 "error": str(payload)[:200]}
@@ -308,20 +331,20 @@ async def stream(videoId: str):
         raise HTTPException(400, "videoId is required, e.g. DR_4_21067736")
     video_id = videoId if videoId.startswith("DR_") else videoId
     try:
-        token = await _ensure_token()
+        token, cookies = await _ensure_token()
     except Exception as e:
         raise HTTPException(502, f"no live 1xBet session: {e}")
-    result = await _mint_cinema(video_id, token)
+    result = await _mint_cinema(video_id, token, cookies)
     if result["kind"] == "error" and result.get("errorCode") == 3:
         # Token rejected ("Log in to view") — drop the cached token and
         # retry once with a fresh login.
         global _cached_token
         _cached_token = ""
         try:
-            token = await _ensure_token()
+            token, cookies = await _ensure_token()
         except Exception as e:
             raise HTTPException(502, f"re-login failed: {e}")
-        result = await _mint_cinema(video_id, token)
+        result = await _mint_cinema(video_id, token, cookies)
     if result["kind"] == "direct":
         return {"videoId": video_id, "kind": "direct",
                 "url": result["url"],
@@ -345,7 +368,7 @@ async def stream(videoId: str):
 async def token():
     """Debug: report whether a live session token is available (no value)."""
     try:
-        tok = await _ensure_token()
+        tok, _cookies = await _ensure_token()
         return {"token_present": bool(tok),
                 "token_len": len(tok) if tok else 0}
     except Exception as e:
