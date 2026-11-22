@@ -229,19 +229,27 @@ def _api_login():
     # Step 1: login. Parse the session cookies from the response headers
     # (the CookieJar proved unreliable here — the login sets cookies the
     # jar drops, so cookies are carried explicitly).
-    body = {"login": user, "password": password}
+    # Body fields (resolved 22 Nov 2026 from the welcome-app JS):
+    # the login endpoint's expectedParams are {...RR(), ...vR()} where
+    # RR() -> {"login": ...} and vR() -> {"authByEmail": ...}. The spare
+    # account logs in by ID (not email), so authByEmail is false.
+    # Omitting authByEmail made the server return only a partial session
+    # (SESSION + auid, no uhash / access_token / authenticated).
+    body = {"login": user, "password": password, "authByEmail": False}
     status, payload, headers = _http_json(
         "POST", mirror + LOGIN_PATH, body, timeout=30)
     log.info("login POST -> %s, payload keys: %s",
              status, list(payload.keys()) if isinstance(payload, dict) else type(payload))
     cookies = _parse_set_cookies(headers)
-    session = cookies.get("uhash") or cookies.get("sh.session.id") or \
-        cookies.get("session")
+    session = (cookies.get("uhash") or cookies.get("SESSION") or
+               cookies.get("sh.session.id") or cookies.get("session"))
     log.info("login session cookie present: %s", bool(session))
     # Step 2: refresh the access token (needs the session cookie).
+    # refreshAccessToken's expectedParams are {initiator, responseStatus},
+    # so the body carries an initiator naming what triggered the refresh.
     status2, payload2, headers2 = _http_json(
-        "POST", mirror + TOKEN_REFRESH_PATH, {}, timeout=30,
-        cookies=cookies)
+        "POST", mirror + TOKEN_REFRESH_PATH,
+        {"initiator": "login"}, timeout=30, cookies=cookies)
     log.info("token/refresh POST -> %s", status2)
     cookies2 = _parse_set_cookies(headers2)
     cookies.update(cookies2)
