@@ -12,14 +12,13 @@ REVISED 22 Nov 2026 — the guest-token path is DEAD. Findings:
 
 How it works now
 ----------------
-1. A headless Chromium (Playwright) with a PERSISTENT profile
-   (/opt/cinema/.profile) stays logged into 1xBet as the SERVICE account
-   (a dedicated account created for this minter — NOT the user's personal
-   account). Credentials come from /opt/cinema/.env (ONEX_USER / ONEX_PASS),
-   written by the operator, never in code or in chat.
-2. When a stream is requested, the minter reads the current access_token
-   from the logged-in browser (localStorage/cookies) and POSTs /cinema
-   with it + the full DR_ video id.
+1. The minter logs in DIRECTLY via the login API (no page UI — the VM's
+   headless browser gets a degraded 1xBet page with no login form).
+   POST /web-api/api/internal/office/account/login with the service
+   account credentials (ONEX_USER / ONEX_PASS from /opt/cinema/.env).
+   The response (JSON body and/or Set-Cookie) carries the access_token.
+2. When a stream is requested, the minter uses the current access_token
+   and POSTs /cinema with it + the full DR_ video id.
 3. /cinema answers in one of three shapes:
    - Direct URL (xmediaget m3u8) -> returned as-is; plays natively.
    - ExternalAuthURL + provider AccessToken (Perform/Opta, ProviderID 1/3)
@@ -27,10 +26,16 @@ How it works now
      provider auth (a separate API).
    - Error (geo-blocked code 5, "Log in to view" code 3, low deposit) ->
      returned as a clear error.
-4. The access_token lives ~20 min; the browser session keeps it fresh
-   (1xBet refreshes it while the session is alive). If /cinema says the
-   token is invalid, the minter re-reads it from the browser; if the
-   session itself died, it re-logs in with the stored credentials.
+4. The access_token lives ~20 min. If /cinema says the token is invalid,
+   the minter re-logs in via the API to get a fresh token.
+
+The login endpoint was found 22 Nov 2026 by reading the 1xBet welcome-app
+JS bundle in the user's Chrome (sys-welcome-app entry-3c2d09ee14.js):
+  x({url:"/web-api/api/internal/office/account/login",method:"POST",
+     isUseXAuth:!0,expectedParams:{...RR(),...vR()}})
+Probed from the VM with dummy creds: HTTP 204 (endpoint exists, not a
+404/302). The browser is no longer used for login; it is kept only as a
+fallback token reader.
 
 Ports: 8803 (Nexus 8801, browser-driver 8802). Caddy route: /cinema-api/
 """
@@ -39,7 +44,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
+import urllib.parse
 import urllib.request
 import urllib.error
 
@@ -55,9 +62,7 @@ MIRRORS = [
 ]
 CINEMA_PATH = "/cinema"
 
-# Persistent browser profile (cookies/session survive restarts) and the
-# credentials file. Both live under /opt/cinema on the VM, never in the repo.
-PROFILE_DIR = os.environ.get("CINEMA_PROFILE_DIR", "/opt/cinema/.profile")
+# The credentials file. Lives under /opt/cinema on the VM, never in the repo.
 CREDS_FILE = os.environ.get("CINEMA_CREDS_FILE", "/opt/cinema/.env")
 
 # How long a minted stream URL is treated as fresh (the signed URL itself
@@ -68,9 +73,6 @@ app = FastAPI(title="cinema-minter")
 
 _mirror_idx = 0
 _session_lock = asyncio.Lock()
-_browser = None
-_context = None
-_page = None
 
 
 def _mirror():
@@ -99,7 +101,15 @@ def _read_creds():
     return user, password
 
 
-def _http_json(method, url, body=None, timeout=30):
+LOGIN_PATH = "/web-api/api/internal/office/account/login"
+
+# Cached access token + expiry (token lives ~20 min).
+_cached_token = ""
+_cached_token_at = 0.0
+TOKEN_TTL_S = 15 * 60
+
+
+def _http_json(method, url, body=None, timeout=30, extra_headers=None):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
@@ -110,65 +120,55 @@ def _http_json(method, url, body=None, timeout=30):
     req.add_header("Accept", "application/json, text/plain, */*")
     req.add_header("Origin", _mirror())
     req.add_header("Referer", _mirror() + "/")
+    if extra_headers:
+        for k, v in extra_headers.items():
+            req.add_header(k, v)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
-            return resp.status, json.loads(resp.read().decode())
+            raw = resp.read().decode(errors="replace")
+            try:
+                payload = json.loads(raw) if raw.strip() else {}
+            except Exception:
+                payload = {"raw": raw[:500]}
+            return resp.status, payload, resp.headers
     except urllib.error.HTTPError as e:
+        raw = e.read().decode(errors="replace")
         try:
-            payload = json.loads(e.read().decode())
+            payload = json.loads(raw) if raw.strip() else {}
         except Exception:
-            payload = {"raw": ""}
-        return e.code, payload
+            payload = {"raw": raw[:500]}
+        return e.code, payload, e.headers
 
 
-async def _ensure_browser():
-    """Launch (or reuse) the persistent logged-in browser."""
-    global _browser, _context, _page
-    if _page is not None:
-        try:
-            await _page.evaluate("1")
-            return _page
-        except Exception:
-            _page = None
-    from playwright.async_api import async_playwright
-
-    pw = await async_playwright().start()
-    _browser = await pw.chromium.launch_persistent_context(
-        user_data_dir=PROFILE_DIR,
-        headless=True,
-        args=["--no-sandbox", "--disable-dev-shm-usage",
-              "--disable-blink-features=AutomationControlled"],
-        user_agent=("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"),
-        viewport={"width": 1280, "height": 800},
-        locale="en-US",
-    )
-    _context = _browser
-    pages = _context.pages
-    _page = pages[0] if pages else await _context.new_page()
-    await _page.add_init_script(
-        "Object.defineProperty(navigator, 'webdriver', "
-        "{get: () => undefined});")
-    return _page
+def _extract_token(status, payload, headers):
+    """Pull an access token out of a login response (body or cookies)."""
+    # JSON body candidates.
+    if isinstance(payload, dict):
+        for key in ("access_token", "accessToken", "token", "user_token",
+                    "auth_token", "session_token"):
+            v = payload.get(key)
+            if isinstance(v, str) and len(v) > 20:
+                return v
+        # Nested data object.
+        data = payload.get("data")
+        if isinstance(data, dict):
+            for key in ("access_token", "accessToken", "token"):
+                v = data.get(key)
+                if isinstance(v, str) and len(v) > 20:
+                    return v
+    # Set-Cookie candidates.
+    if headers is not None:
+        cookies = headers.get_all("Set-Cookie") or []
+        for c in cookies:
+            m = re.search(r"(?:^|;\s*)(access_token|user_token|session)[=]([^;]+)",
+                          c, re.I)
+            if m and len(m.group(2)) > 20:
+                return urllib.parse.unquote(m.group(2))
+    return ""
 
 
-async def _is_logged_in(page):
-    """True if the browser has a live 1xBet session."""
-    try:
-        val = await page.evaluate(
-            "() => {"
-            "  try { if (localStorage.getItem('access_token')) return 'ls'; } catch(e) {}"
-            "  const m = document.cookie.match(/(?:^|; )access_token=([^;]*)/);"
-            "  return m ? 'cookie' : '';"
-            "}")
-        return bool(val)
-    except Exception:
-        return False
-
-
-async def _login(page):
-    """Log in as the service account. Raises if credentials are missing."""
+def _api_login():
+    """Log in via the login API. Returns the access_token, or raises."""
     user, password = _read_creds()
     if not user or not password:
         raise RuntimeError(
@@ -176,77 +176,35 @@ async def _login(page):
             f"{CREDS_FILE} (or env). The account must be a dedicated 1xBet "
             "account for this minter, not the user's personal account.")
     mirror = _mirror()
-    await page.goto(mirror + "/en/registration", wait_until="domcontentloaded",
-                    timeout=60000)
-    await page.wait_for_timeout(3000)
-    # The login form lives on the auth page; try the login link first.
-    try:
-        await page.click("text=Log in", timeout=5000)
-        await page.wait_for_timeout(2000)
-    except Exception:
-        pass
-    # Fill the username / password fields (try common selectors).
-    filled = False
-    for sel in ("input[name='login']", "input[type='text']",
-                "input[placeholder*='ID' i]", "input[placeholder*='login' i]"):
-        try:
-            await page.fill(sel, user, timeout=3000)
-            filled = True
-            break
-        except Exception:
-            continue
-    if not filled:
-        raise RuntimeError("login form not found (username field)")
-    for sel in ("input[name='password']", "input[type='password']"):
-        try:
-            await page.fill(sel, password, timeout=3000)
-            break
-        except Exception:
-            continue
-    # Submit.
-    try:
-        await page.click("button[type='submit']", timeout=5000)
-    except Exception:
-        await page.keyboard.press("Enter")
-    await page.wait_for_timeout(5000)
-    if not await _is_logged_in(page):
-        raise RuntimeError("login failed: no session token after sign-in "
-                           "(wrong credentials, or a captcha/2FA is in the way)")
-    log.info("logged in as service account")
+    # The site's JS posts {login, password} (field names from the login
+    # form). Try the plain shape first.
+    body = {"login": user, "password": password}
+    status, payload, headers = _http_json(
+        "POST", mirror + LOGIN_PATH, body, timeout=30)
+    log.info("login POST -> %s, payload keys: %s",
+             status, list(payload.keys()) if isinstance(payload, dict) else type(payload))
+    token = _extract_token(status, payload, headers)
+    if token:
+        log.info("login OK (token len %d)", len(token))
+        return token
+    # The endpoint answered but no token was readable — report what it said
+    # (without the credentials) so the next iteration knows the shape.
+    detail = str(payload)[:300] if payload else f"HTTP {status}, empty body"
+    raise RuntimeError(
+        f"login API answered {status} but no access_token found: {detail}")
 
 
-async def _get_access_token(page):
-    """Read the current access_token from the logged-in browser."""
-    try:
-        tok = await page.evaluate(
-            "() => {"
-            "  try { const t = localStorage.getItem('access_token');"
-            "        if (t) return t; } catch(e) {}"
-            "  try { const t = sessionStorage.getItem('access_token');"
-            "        if (t) return t; } catch(e) {}"
-            "  const m = document.cookie.match(/(?:^|; )access_token=([^;]*)/);"
-            "  return m ? decodeURIComponent(m[1]) : '';"
-            "}")
-        return tok or ""
-    except Exception:
-        return ""
-
-
-async def _ensure_logged_in():
-    """Return a page with a live session, logging in if needed."""
+async def _ensure_token():
+    """Return a live access_token, logging in via the API if needed."""
+    global _cached_token, _cached_token_at
     async with _session_lock:
-        page = await _ensure_browser()
-        # Land on a 1xBet page so storage/cookies are readable.
-        try:
-            await page.goto(_mirror() + "/en/live/football",
-                            wait_until="domcontentloaded", timeout=60000)
-            await page.wait_for_timeout(2000)
-        except Exception as e:
-            log.warning("goto live page failed: %s", e)
-        if await _is_logged_in(page):
-            return page
-        await _login(page)
-        return page
+        if (_cached_token and
+                time.time() - _cached_token_at < TOKEN_TTL_S):
+            return _cached_token
+        token = await asyncio.to_thread(_api_login)
+        _cached_token = token
+        _cached_token_at = time.time()
+        return token
 
 
 async def _mint_cinema(video_id, access_token):
@@ -257,7 +215,7 @@ async def _mint_cinema(video_id, access_token):
         "Language": "en", "AccessToken": access_token,
         "VideoId": video_id, "Record": False, "ApiVer": "v1.1.0",
     }
-    status, payload = await asyncio.to_thread(
+    status, payload, _headers = await asyncio.to_thread(
         _http_json, "POST", _mirror() + CINEMA_PATH, body)
     if status != 200:
         return {"kind": "error", "status": status,
@@ -303,13 +261,20 @@ async def stream(videoId: str):
         raise HTTPException(400, "videoId is required, e.g. DR_4_21067736")
     video_id = videoId if videoId.startswith("DR_") else videoId
     try:
-        page = await _ensure_logged_in()
-        token = await _get_access_token(page)
-        if not token:
-            raise RuntimeError("logged in but no access_token readable")
+        token = await _ensure_token()
     except Exception as e:
         raise HTTPException(502, f"no live 1xBet session: {e}")
     result = await _mint_cinema(video_id, token)
+    if result["kind"] == "error" and result.get("errorCode") == 3:
+        # Token rejected ("Log in to view") — drop the cached token and
+        # retry once with a fresh login.
+        global _cached_token
+        _cached_token = ""
+        try:
+            token = await _ensure_token()
+        except Exception as e:
+            raise HTTPException(502, f"re-login failed: {e}")
+        result = await _mint_cinema(video_id, token)
     if result["kind"] == "direct":
         return {"videoId": video_id, "kind": "direct",
                 "url": result["url"],
@@ -333,8 +298,7 @@ async def stream(videoId: str):
 async def token():
     """Debug: report whether a live session token is available (no value)."""
     try:
-        page = await _ensure_logged_in()
-        tok = await _get_access_token(page)
+        tok = await _ensure_token()
         return {"token_present": bool(tok),
                 "token_len": len(tok) if tok else 0}
     except Exception as e:
