@@ -16,7 +16,13 @@ How it works now
    headless browser gets a degraded 1xBet page with no login form).
    POST /web-api/api/internal/office/account/login with the service
    account credentials (ONEX_USER / ONEX_PASS from /opt/cinema/.env).
-   The response (JSON body and/or Set-Cookie) carries the access_token.
+   That returns 204 + a session cookie (uhash, 32 chars) — NOT the token
+   /cinema wants. A second call, POST
+   /web-api/api/internal/user/token/refresh, returns 204 + the
+   access_token cookie (a ~557-char JWT). That JWT is what /cinema takes.
+   (Both endpoints found 22 Nov 2026 in the site's shared base-app JS
+   chunk; the browser's TokenService does exactly this two-step flow.)
+   Cookies persist in a shared jar across login -> refresh -> cinema.
 2. When a stream is requested, the minter uses the current access_token
    and POSTs /cinema with it + the full DR_ video id.
 3. /cinema answers in one of three shapes:
@@ -33,14 +39,15 @@ The login endpoint was found 22 Nov 2026 by reading the 1xBet welcome-app
 JS bundle in the user's Chrome (sys-welcome-app entry-3c2d09ee14.js):
   x({url:"/web-api/api/internal/office/account/login",method:"POST",
      isUseXAuth:!0,expectedParams:{...RR(),...vR()}})
-Probed from the VM with dummy creds: HTTP 204 (endpoint exists, not a
-404/302). The browser is no longer used for login; it is kept only as a
-fallback token reader.
+The token/refresh endpoint was found the same day in the shared base-app
+chunk (__shared_base-app_92d18dd216.js), which also holds the TokenService
+(useTokenService/fetchToken). The browser is no longer used for login.
 
 Ports: 8803 (Nexus 8801, browser-driver 8802). Caddy route: /cinema-api/
 """
 
 import asyncio
+import http.cookiejar
 import json
 import logging
 import os
@@ -102,11 +109,27 @@ def _read_creds():
 
 
 LOGIN_PATH = "/web-api/api/internal/office/account/login"
+TOKEN_REFRESH_PATH = "/web-api/api/internal/user/token/refresh"
 
 # Cached access token + expiry (token lives ~20 min).
 _cached_token = ""
 _cached_token_at = 0.0
 TOKEN_TTL_S = 15 * 60
+
+# Shared cookie jar: the login sets a session cookie (uhash) and the
+# token/refresh call sets the access_token JWT cookie. Cookies must persist
+# across the login -> refresh -> cinema calls.
+_cookie_jar = http.cookiejar.CookieJar()
+_opener = urllib.request.build_opener(
+    urllib.request.HTTPCookieProcessor(_cookie_jar))
+
+
+def _cookie_value(name):
+    """Read one cookie's value from the shared jar ('' if absent)."""
+    for c in _cookie_jar:
+        if c.name == name:
+            return c.value
+    return ""
 
 
 def _http_json(method, url, body=None, timeout=30, extra_headers=None):
@@ -124,7 +147,7 @@ def _http_json(method, url, body=None, timeout=30, extra_headers=None):
         for k, v in extra_headers.items():
             req.add_header(k, v)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with _opener.open(req, timeout=timeout) as resp:
             raw = resp.read().decode(errors="replace")
             try:
                 payload = json.loads(raw) if raw.strip() else {}
@@ -168,7 +191,19 @@ def _extract_token(status, payload, headers):
 
 
 def _api_login():
-    """Log in via the login API. Returns the access_token, or raises."""
+    """Log in via the login API, then refresh the access token.
+
+    Returns the access_token JWT, or raises.
+    Flow (found 22 Nov 2026 in the site's shared base-app JS chunk):
+    1. POST /web-api/api/internal/office/account/login {login, password}
+       -> 204, sets a session cookie (uhash, 32 chars). This is NOT the
+       access_token /cinema wants.
+    2. POST /web-api/api/internal/user/token/refresh {}
+       -> 204, sets the access_token cookie (a ~557-char JWT).
+    The browser's TokenService (useTokenService/fetchToken) does step 2
+    after login; the access_token lives in a cookie, in-memory in the app,
+    never in localStorage/IndexedDB.
+    """
     user, password = _read_creds()
     if not user or not password:
         raise RuntimeError(
@@ -176,22 +211,34 @@ def _api_login():
             f"{CREDS_FILE} (or env). The account must be a dedicated 1xBet "
             "account for this minter, not the user's personal account.")
     mirror = _mirror()
-    # The site's JS posts {login, password} (field names from the login
-    # form). Try the plain shape first.
+    # Step 1: login. Clears any stale cookies first.
+    _cookie_jar.clear()
     body = {"login": user, "password": password}
     status, payload, headers = _http_json(
         "POST", mirror + LOGIN_PATH, body, timeout=30)
     log.info("login POST -> %s, payload keys: %s",
              status, list(payload.keys()) if isinstance(payload, dict) else type(payload))
-    token = _extract_token(status, payload, headers)
-    if token:
-        log.info("login OK (token len %d)", len(token))
+    session = _cookie_value("uhash") or _cookie_value("sh.session.id")
+    log.info("login session cookie present: %s", bool(session))
+    # Step 2: refresh the access token (needs the session cookie).
+    status2, payload2, headers2 = _http_json(
+        "POST", mirror + TOKEN_REFRESH_PATH, {}, timeout=30)
+    log.info("token/refresh POST -> %s", status2)
+    token = _cookie_value("access_token")
+    if token and len(token) > 100:
+        log.info("token/refresh OK (access_token len %d)", len(token))
         return token
-    # The endpoint answered but no token was readable — report what it said
-    # (without the credentials) so the next iteration knows the shape.
-    detail = str(payload)[:300] if payload else f"HTTP {status}, empty body"
+    # Fall back to anything the responses carried (body or Set-Cookie).
+    token = _extract_token(status2, payload2, headers2)
+    if token and len(token) > 100:
+        return token
+    token = _extract_token(status, payload, headers)
+    if token and len(token) > 100:
+        return token
     raise RuntimeError(
-        f"login API answered {status} but no access_token found: {detail}")
+        f"login OK (session={bool(session)}) but no access_token JWT after "
+        f"token/refresh (refresh HTTP {status2}); access_token cookie "
+        f"len={len(_cookie_value('access_token'))}")
 
 
 async def _ensure_token():
