@@ -1,0 +1,16 @@
+[Unit]
+Description=Cinema minter — 1xBet guest stream URL minter (no login)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cinema
+WorkingDirectory=/opt/cinema
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/cinema/.venv/bin/python -m uvicorn cinema-minter:app --host 127.0.0.1 --port 8803
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
