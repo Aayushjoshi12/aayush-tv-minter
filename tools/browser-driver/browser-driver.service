@@ -1,0 +1,19 @@
+[Unit]
+Description=Browser Driver backend for Muse (drives the user's Chrome)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=driver
+Group=driver
+WorkingDirectory=/opt/browser-driver
+EnvironmentFile=/opt/browser-driver/.env
+# Check the uvicorn path on the VM first: `which uvicorn`
+# (MRET runs uvicorn the same way; use the same path it uses.)
+ExecStart=/usr/local/bin/uvicorn main:app --host 127.0.0.1 --port 8802
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

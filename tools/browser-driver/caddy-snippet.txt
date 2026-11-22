@@ -1,0 +1,19 @@
+# Caddy route for the Browser Driver (add to the VM's Caddyfile, inside the
+# mret.aayushlife.live site block — read the current Caddyfile first, the
+# exact shape depends on how MRET's site is written). No new DNS needed:
+# the extension and Muse call https://mret.aayushlife.live/driver-api/... and
+# Caddy strips the /driver-api prefix before proxying to the driver.
+# WebSocket (the extension's /ws/extension) works through Caddy's
+# reverse_proxy by default — no extra config.
+#
+# Do NOT touch the MRET routes (/api/...) or the Nexus route (/nexus-api/).
+# After editing: sudo systemctl reload caddy
+# (or: sudo caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile)
+# Verify: curl -s https://mret.aayushlife.live/driver-api/health
+#         -> {"ok":true,"extension_connected":false} (false until the
+#            extension is loaded and connected)
+
+handle /driver-api/* {
+	uri strip_prefix /driver-api
+	reverse_proxy 127.0.0.1:8802
+}
