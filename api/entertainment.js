@@ -237,6 +237,62 @@ module.exports = async (req, res) => {
     }
   }
 
+  // --- Latest episodes: ?latest=1 ---
+  // Returns the freshest 50 episodes straight from the live RSS feed,
+  // so the page always shows new episodes without any scheduled job or
+  // file update. The feed has no episode numbers, so they are taken
+  // from the homepage's episode cards (guid -> number); the episode
+  // page itself is NOT used for numbers (its first episode-number
+  // belongs to a "latest episodes" sidebar, so every show would
+  // inherit the newest show's number). If a number cannot be found
+  // it stays null (the page handles null).
+  if (req.query.latest) {
+    try {
+      const feedXml = await fetchText("https://www.desitashan.su/feed.xml", {});
+      const items = [...feedXml.matchAll(/<item>([\s\S]*?)<\/item>/g)].map((m) => m[1]);
+      if (!items.length) return json(res, 502, { error: "feed empty" });
+      // Homepage guid -> episode number map (cards only).
+      let numbers = {};
+      try {
+        const home = await fetchText("https://www.desitashan.su/", {});
+        const blocks = home.match(/<article class="(?:spotlight-item|card has-date)"[^>]*>[\s\S]*?<\/article>/g) || [];
+        for (const b of blocks) {
+          const href = b.match(/<a href="\/[^"]+\/([a-f0-9]{16})\/"/);
+          const num = b.match(/episode-number-card"[^>]*>Episode (\d+)</);
+          if (href && num) numbers[href[1]] = Number(num[1]);
+        }
+      } catch (_) { /* numbers stay empty; episodes get null */ }
+      const episodes = [];
+      for (const it of items) {
+        const title = (it.match(/<title>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/title>/) || [])[1] || "";
+        const link = (it.match(/<link>([\s\S]*?)<\/link>/) || [])[1] || "";
+        const pub = (it.match(/<pubDate>([\s\S]*?)<\/pubDate>/) || [])[1] || "";
+        const thumb = (it.match(/<media:thumbnail[^>]*url="([^"]+)"/) || [])[1] || "";
+        const tm = title.match(/^(.*?) (\d{1,2})(?:st|nd|rd|th) (\w+) (\d{4}) Full Episode \| (.+)$/);
+        const gm = link.match(/\/([a-f0-9]{16})\/?$/);
+        if (!tm || !gm) continue;
+        episodes.push({
+          channel: tm[5].trim(),
+          date: tm[2] + " " + tm[3] + " " + tm[4],
+          episode: numbers[gm[1]] != null ? numbers[gm[1]] : null,
+          guid: gm[1],
+          link: link.trim(),
+          poster: thumb,
+          pubDate: pub.trim(),
+          show: tm[1].trim(),
+        });
+      }
+      if (!episodes.length) return json(res, 502, { error: "feed parsed to zero episodes" });
+      return json(res, 200, {
+        episodes: episodes.slice(0, 50),
+        generated_at: new Date().toISOString(),
+        source: "https://www.desitashan.su/feed.xml",
+      });
+    } catch (e) {
+      return json(res, 502, { error: "latest fetch failed: " + e.message });
+    }
+  }
+
   // --- Show episodes: ?show=<category slug>&page=<n> ---
   // e.g. ?show=star-plus/anupama  or  ?show=bigg-boss-19  (page 1 default)
   if (req.query.show) {
