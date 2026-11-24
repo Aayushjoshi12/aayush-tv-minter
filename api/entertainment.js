@@ -172,6 +172,71 @@ module.exports = async (req, res) => {
     }
   }
 
+  // --- Video Range proxy: ?video=<encoded Yandex MP4 URL> ---
+  // The Yandex host returns `Content-Disposition: attachment` (and 403s
+  // on ANY Referer), which makes a browser <video> fail with
+  // "Unable to play media" even though the bytes are a valid MP4.
+  // This proxy re-serves the same bytes with clean headers so the
+  // <video> element can play them: Content-Type video/mp4, no
+  // Content-Disposition, proper Range support. The browser's own Range
+  // header is forwarded (capped to 2 MB per response so no single
+  // serverless invocation streams a whole ~80 MB file). Only Yandex
+  // Disk URLs are accepted, so this cannot be used as an open proxy.
+  if (req.query.video) {
+    let videoUrl = req.query.video;
+    try {
+      videoUrl = decodeURIComponent(videoUrl);
+    } catch (_) {}
+    let host = "";
+    try {
+      host = new URL(videoUrl).hostname;
+    } catch (_) {}
+    if (host !== "mds.storage.yandex.net") {
+      return json(res, 400, { error: "video url must be a Yandex Disk URL" });
+    }
+    const CHUNK = 2 * 1024 * 1024; // 2 MB max per response
+    // Parse the incoming Range (e.g. "bytes=12345-" or "bytes=12345-99999").
+    const inRange = req.headers.range || "";
+    const rm = inRange.match(/bytes=(\d+)-(\d*)/);
+    const start = rm ? Number(rm[1]) : 0;
+    const end = rm && rm[2] !== "" ? Number(rm[2]) : start + CHUNK - 1;
+    const cappedEnd = Math.min(end, start + CHUNK - 1);
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 9000);
+      let up;
+      try {
+        up = await fetch(videoUrl, {
+          headers: { "User-Agent": UA, Range: "bytes=" + start + "-" + cappedEnd },
+          signal: ctrl.signal,
+        });
+      } finally {
+        clearTimeout(t);
+      }
+      if (!up.ok && up.status !== 206) {
+        return json(res, 502, { error: "upstream HTTP " + up.status });
+      }
+      // Work out the total size from Content-Range ("bytes a-b/total").
+      const upRange = up.headers.get("content-range") || "";
+      const tm = upRange.match(/\/(\d+)\s*$/);
+      const total = tm ? Number(tm[1]) : null;
+      const buf = Buffer.from(await up.arrayBuffer());
+      const realEnd = start + buf.length - 1;
+      cors(res);
+      res.statusCode = 206;
+      res.setHeader("Content-Type", "video/mp4");
+      res.setHeader("Accept-Ranges", "bytes");
+      res.setHeader("Content-Length", String(buf.length));
+      if (total !== null) {
+        res.setHeader("Content-Range", "bytes " + start + "-" + realEnd + "/" + total);
+      }
+      res.setHeader("Cache-Control", "no-store");
+      return res.end(buf);
+    } catch (e) {
+      return json(res, 502, { error: "video proxy failed: " + e.message });
+    }
+  }
+
   // --- Show episodes: ?show=<category slug>&page=<n> ---
   // e.g. ?show=star-plus/anupama  or  ?show=bigg-boss-19  (page 1 default)
   if (req.query.show) {
