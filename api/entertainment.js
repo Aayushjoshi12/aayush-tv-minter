@@ -20,18 +20,34 @@
 //      embed_url (desitashan episode URL included) returns 403.
 //   5. play.php 302-redirects to a Yandex Disk MP4 (mds.storage.yandex.net).
 //      That host 403s ("Invalid Referer") on ANY Referer and serves the
-//      video (206, ftypisom) only when NO Referer is sent — which is why
-//      the site's <video> must carry referrerpolicy="no-referrer".
+//      video (206, ftypisom) only when NO Referer is sent. BUT the browser
+//      cannot follow that redirect safely: play.php's 302 response carries
+//      `Referrer-Policy: strict-origin-when-cross-origin` (Cloudflare),
+//      which OVERRIDES the <video>'s referrerpolicy="no-referrer" for the
+//      redirected request, so the browser sends `Referer: freezod.com` to
+//      Yandex and gets 403 ("Unable to play media.", verified 24 Nov 2026).
+//      FIX (24 Nov 2026): the resolver follows the play.php redirect
+//      ITSELF (server-side, redirect:manual) and hands the browser the
+//      final Yandex URL directly. The <video> then loads Yandex with
+//      referrerpolicy="no-referrer" -> no Referer -> 206 -> plays.
+//      (Yandex Disk signed links are shareable, not IP-bound — a URL
+//      minted by one IP plays from another; verified by tap-test.)
 //      The signed play URL expires in ~1h, the subtitle URL in ~24h, so
 //      the page resolves fresh at click time and never caches URLs.
 //
 // GET /api/entertainment?url=<episode URL>&part=<1|2|3>
-//   -> { "title": "...", "video": "https://freezod.com/hls/play.php?...",
+//   -> { "title": "...", "video": "https://mds.storage.yandex.net/...mp4...",
+//        "playUrl": "https://freezod.com/hls/play.php?...",
 //        "subtitles": [{ "label": "English", "url": "https://freezod.com/hls/subtitle.php?..." }],
 //        "parts": [1,2,3], "part": 1 }
 // GET /api/entertainment?sub=<encoded subtitle.php URL>
 //   -> the VTT body (text/vtt), proxied because subtitle.php sends no
 //      CORS header and a cross-origin <track> would be blocked.
+// GET /api/entertainment?show=<category slug, e.g. star-plus/anupama>&page=<n>
+//   -> { "show": "<slug>", "page": 1, "episodes": [{ "title", "url", "guid",
+//        "date", "poster", "episode" }], "hasMore": true }
+//      (parses the site's category page server-side; the page cannot fetch
+//      it directly — no CORS header. 30 episodes per page.)
 // On failure: { "error": "..." } with 502.
 
 const UA =
@@ -70,6 +86,64 @@ async function fetchJson(url, headers, timeoutMs) {
   return JSON.parse(await fetchText(url, headers, timeoutMs));
 }
 
+// Follow one redirect manually and return the Location URL (or the
+// original URL if there is no redirect). Used for play.php -> Yandex:
+// the browser must not follow that redirect itself (see step 5 note).
+async function followRedirect(url, timeoutMs) {
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), timeoutMs || TIMEOUT_MS);
+  try {
+    const r = await fetch(url, {
+      headers: { "User-Agent": UA },
+      redirect: "manual",
+      signal: ctrl.signal,
+    });
+    const loc = r.headers.get("location");
+    if (r.status >= 300 && r.status < 400 && loc) return loc;
+    if (r.ok) return url; // no redirect — return as-is
+    throw new Error("HTTP " + r.status + " from " + url);
+  } finally {
+    clearTimeout(t);
+  }
+}
+
+// Parse a category page into episode objects. The page carries the
+// episode list twice: 10 featured "spotlight-item" cards (latest 10)
+// and the paginated "card has-date" list (20 per page). We parse both,
+// dedupe by guid, and keep page order (newest first).
+function parseCategoryPage(html) {
+  const eps = [];
+  const seen = new Set();
+  const blocks = html.match(/<article class="(?:spotlight-item|card has-date)"[^>]*>[\s\S]*?<\/article>/g) || [];
+  for (const b of blocks) {
+    const href = b.match(/<a href="(\/[^"]+\/([a-f0-9]{16})\/)"/);
+    if (!href || seen.has(href[2])) continue;
+    const epNum = b.match(/episode-number-card"[^>]*>Episode (\d+)</);
+    const img = b.match(/<img src="([^"]+)"/);
+    const date =
+      b.match(/spotlight-date">([^<]+)</) ||
+      b.match(/episode-date-card">[\s\S]*?(\d{1,2} \w+ \d{4})/);
+    const title =
+      b.match(/<h3>([^<]+)<\/h3>/) ||
+      b.match(/<h3[^>]*><a[^>]*>([^<]+)<\/a><\/h3>/);
+    if (!title) continue;
+    seen.add(href[2]);
+    eps.push({
+      url: "https://www.desitashan.su" + href[1],
+      guid: href[2],
+      episode: epNum ? Number(epNum[1]) : null,
+      poster: img
+        ? img[1].startsWith("http")
+          ? img[1]
+          : "https://www.desitashan.su" + img[1]
+        : "",
+      date: date ? date[1].trim() : "",
+      title: title[1].trim(),
+    });
+  }
+  return eps;
+}
+
 module.exports = async (req, res) => {
   if (req.method === "OPTIONS") {
     cors(res);
@@ -95,6 +169,28 @@ module.exports = async (req, res) => {
       return res.end(vtt);
     } catch (e) {
       return json(res, 502, { error: "subtitle fetch failed: " + e.message });
+    }
+  }
+
+  // --- Show episodes: ?show=<category slug>&page=<n> ---
+  // e.g. ?show=star-plus/anupama  or  ?show=bigg-boss-19  (page 1 default)
+  if (req.query.show) {
+    const slug = String(req.query.show).replace(/^\/+|\/+$/g, "");
+    if (!/^[a-z0-9][a-z0-9\-\/]*[a-z0-9]$/.test(slug) || slug.includes("..")) {
+      return json(res, 400, { error: "bad show slug" });
+    }
+    const pageNum = Math.max(1, Number(req.query.page) || 1);
+    const catUrl =
+      "https://www.desitashan.su/category/" +
+      slug +
+      (pageNum > 1 ? "/page/" + pageNum + "/" : "/");
+    try {
+      const html = await fetchText(catUrl, {});
+      const episodes = parseCategoryPage(html);
+      const hasMore = /\/page\/\d+\//.test(html) && /rel="next"|>Next</.test(html);
+      return json(res, 200, { show: slug, page: pageNum, episodes, hasMore });
+    } catch (e) {
+      return json(res, 502, { error: "show fetch failed: " + e.message });
     }
   }
 
@@ -157,16 +253,27 @@ module.exports = async (req, res) => {
       "&type=player";
     const meta = await fetchJson(metaUrl, { Referer: articleUrl });
     if (!meta.source || !meta.source.file) throw new Error("no source in media_meta");
-    const video = FREEZOD + "/hls/" + meta.source.file;
+    const playUrl = FREEZOD + "/hls/" + meta.source.file;
     const subtitles = (meta.tracks || []).map((t) => ({
       label: t.label || "English",
       lang: t.srclang || "en",
       url: FREEZOD + "/hls/" + t.file,
     }));
 
+    // 5. Follow the play.php -> Yandex redirect server-side (see note
+    // above) so the browser loads the final MP4 directly, with no
+    // Referer, instead of following a redirect that would attach one.
+    let video = playUrl;
+    try {
+      video = await followRedirect(playUrl);
+    } catch (_) {
+      // If the redirect read fails, fall back to the play.php URL.
+    }
+
     return json(res, 200, {
       title: meta.source.title || "",
       video,
+      playUrl,
       subtitles,
       parts,
       part,
