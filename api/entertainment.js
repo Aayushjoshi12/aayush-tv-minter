@@ -3,7 +3,10 @@
 // Desi Tashan episode pages embed a Freezod player. The playable video is
 // reached through a short server-side chain (verified end-to-end 24 Nov 2026):
 //   1. Episode page (desitashan.su) -> getlink.php URL, carrying tokens
-//      v (Part 1), part2 (Part 2), part3 (Part 3).
+//      v (Part 1), part2, part3, ... partN. Most episodes have 3 parts,
+//      but long ones have more (Bigg Boss 20: 7 parts, KBC 17: 5 —
+//      verified 25 Nov 2026). The resolver reads every partN param
+//      instead of assuming 3, and returns the full parts list.
 //   2. GET getlink.php with Referer: <episode URL> -> hidden `ve` token.
 //      (getlink.php 403s without a desitashan.su Referer, so a direct
 //      iframe embed from aayushlife.live cannot work.)
@@ -35,11 +38,11 @@
 //      The signed play URL expires in ~1h, the subtitle URL in ~24h, so
 //      the page resolves fresh at click time and never caches URLs.
 //
-// GET /api/entertainment?url=<episode URL>&part=<1|2|3>
+// GET /api/entertainment?url=<episode URL>&part=<n> (n = any part the source offers)
 //   -> { "title": "...", "video": "https://mds.storage.yandex.net/...mp4...",
 //        "playUrl": "https://freezod.com/hls/play.php?...",
 //        "subtitles": [{ "label": "English", "url": "https://freezod.com/hls/subtitle.php?..." }],
-//        "parts": [1,2,3], "part": 1 }
+//        "parts": [1,2,3], "part": 1 }   // parts = full list the source offers
 // GET /api/entertainment?sub=<encoded subtitle.php URL>
 //   -> the VTT body (text/vtt), proxied because subtitle.php sends no
 //      CORS header and a cross-origin <track> would be blocked.
@@ -52,7 +55,11 @@
 
 const UA =
   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36";
-const TIMEOUT_MS = 5000;
+const TIMEOUT_MS = 8000; // per-fetch timeout (raised 25 Nov 2026 from 5000:
+// desitashan/freezod occasionally take >5s from Vercel, aborting the
+// whole resolve with "This operation was aborted" — intermittent
+// playback failures. 8s leaves room for one slow step while the
+// 5-step chain normally stays under Vercel Hobby's 10s limit.)
 const FREEZOD = "https://freezod.com";
 const PUBLISHED = "https://go.freezod.com/published";
 
@@ -320,10 +327,10 @@ module.exports = async (req, res) => {
   if (!epUrl || !/^https?:\/\/(www\.)?desitashan\.(su|com\.in|net)\//.test(epUrl)) {
     return json(res, 400, { error: "url must be a Desi Tashan episode page" });
   }
-  const part = [1, 2, 3].includes(Number(req.query.part)) ? Number(req.query.part) : 1;
+  const part = Math.max(1, Number(req.query.part) || 1);
 
   try {
-    // 1. Episode page -> getlink.php URL with v/part2/part3 tokens.
+    // 1. Episode page -> getlink.php URL with v/part2/.../partN tokens.
     const page = await fetchText(epUrl, {});
     const glMatch = page.match(
       /freezod\.searchping\.com\/desitashan\/getlink\.php\?[^"'<>\s]+/
@@ -331,12 +338,14 @@ module.exports = async (req, res) => {
     if (!glMatch) throw new Error("no getlink.php on episode page");
     const glUrl = "https://" + glMatch[0].replace(/&amp;/g, "&");
     const glParams = new URL(glUrl).searchParams;
-    const tokens = {
-      1: glParams.get("v"),
-      2: glParams.get("part2"),
-      3: glParams.get("part3"),
-    };
-    const parts = [1, 2, 3].filter((n) => tokens[n]);
+    // v = Part 1; part2..partN = the rest. Read every partN param the
+    // source offers (most episodes: 3; Bigg Boss 20: 7; KBC 17: 5).
+    const tokens = { 1: glParams.get("v") };
+    for (let n = 2; n <= 20; n++) {
+      const t = glParams.get("part" + n);
+      if (t) tokens[n] = t;
+    }
+    const parts = Object.keys(tokens).map(Number).sort((a, b) => a - b);
     if (!tokens[part]) {
       return json(res, 404, { error: "part " + part + " not available", parts });
     }
