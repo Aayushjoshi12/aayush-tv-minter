@@ -1,0 +1,16 @@
+[Unit]
+Description=CineSrc minter — direct HLS URL minter for Aayush TV Server 3
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cinesrc
+WorkingDirectory=/opt/cinesrc
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/cinesrc/.venv/bin/python -m uvicorn cinesrc-minter:app --host 127.0.0.1 --port 8805
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
