@@ -49,8 +49,9 @@
 // GET /api/entertainment?show=<category slug, e.g. star-plus/anupama>&page=<n>
 //   -> { "show": "<slug>", "page": 1, "episodes": [{ "title", "url", "guid",
 //        "date", "poster", "episode" }], "hasMore": true }
-//      (parses the site's category page server-side; the page cannot fetch
-//      it directly — no CORS header. 30 episodes per page.)
+//      (tries the site's own ajax_posts.php API first, falls back to
+//      parsing the category page server-side; the page cannot fetch
+//      either directly — no CORS header. 30 episodes per page.)
 // On failure: { "error": "..." } with 502.
 
 const UA =
@@ -302,6 +303,13 @@ module.exports = async (req, res) => {
 
   // --- Show episodes: ?show=<category slug>&page=<n> ---
   // e.g. ?show=star-plus/anupama  or  ?show=bigg-boss-19  (page 1 default)
+  // Automatic (26 Nov 2026): the site's own API (ajax_posts.php) is tried
+  // first — it returns a show's episode cards as JSON, no page scrape
+  // needed. It only answers for channels and brand-new shows, though
+  // (tested live 26 Nov: star-plus, dil-ki-bewafaiyaan and
+  // kyunki-rishton-ke-bhi-roop-badalte-hai answer; anupama, kumkum-bhagya,
+  // yeh-rishta-kya-kehlata-hai, jhanak come back empty), so the category
+  // page is the fallback and keeps every show working.
   if (req.query.show) {
     const slug = String(req.query.show).replace(/^\/+|\/+$/g, "");
     if (!/^[a-z0-9][a-z0-9\-\/]*[a-z0-9]$/.test(slug) || slug.includes("..")) {
@@ -313,9 +321,34 @@ module.exports = async (req, res) => {
       slug +
       (pageNum > 1 ? "/page/" + pageNum + "/" : "/");
     try {
-      const html = await fetchText(catUrl, {});
-      const episodes = parseCategoryPage(html);
-      const hasMore = /\/page\/\d+\//.test(html) && /rel="next"|>Next</.test(html);
+      let episodes = [];
+      let hasMore = false;
+      // 1) Site's own API (last slug segment — the API's categories are
+      //    flat: "star-plus", "dil-ki-bewafaiyaan", not "star-plus/anupama").
+      //    Short timeout so a slow API still leaves room for the fallback
+      //    inside Vercel Hobby's 10s limit.
+      try {
+        const apiSlug = slug.split("/").pop();
+        const api = await fetchJson(
+          "https://www.desitashan.su/ajax_posts.php?category=" +
+            encodeURIComponent(apiSlug) +
+            "&page=" +
+            pageNum,
+          {},
+          4000
+        );
+        if (api && typeof api.posts === "string" && !api.posts.includes("empty-state")) {
+          episodes = parseCategoryPage(api.posts);
+          const pag = typeof api.pagination === "string" ? api.pagination : "";
+          hasMore = /\/page\/\d+\//.test(pag) && /rel="next"|>Next</.test(pag);
+        }
+      } catch (_) { /* API missed — fall through to the page scrape */ }
+      // 2) Fallback: scrape the category page (works for every show).
+      if (!episodes.length) {
+        const html = await fetchText(catUrl, {});
+        episodes = parseCategoryPage(html);
+        hasMore = /\/page\/\d+\//.test(html) && /rel="next"|>Next</.test(html);
+      }
       return json(res, 200, { show: slug, page: pageNum, episodes, hasMore });
     } catch (e) {
       return json(res, 502, { error: "show fetch failed: " + e.message });
