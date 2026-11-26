@@ -784,18 +784,24 @@ async function resolveBintv(path) {
   const html = await page.text();
 
   const decoded = decodePlayerScript(html);
-  const ticket = decoded.match(/loadStreamUrl\("(https?:\/\/[^"]+)"/);
+  // Ticket URL, two shapes (26 Nov 2026): the player now puts it in
+  // a plain CFG object — {"ticketUrl":"https://tims-001.../p/<hex>"} —
+  // where it used to call loadStreamUrl("..."). Try the new shape
+  // first, keep the old one as a fallback in case it comes back.
+  const cfgTicket = decoded.match(/"ticketUrl"\s*:\s*"(https?:\/\/[^"]+)"/);
+  const oldTicket = decoded.match(/loadStreamUrl\("(https?:\/\/[^"]+)"/);
+  const ticket = (cfgTicket && cfgTicket[1]) || (oldTicket && oldTicket[1]);
   if (!ticket) throw new Error("Ticket URL not found");
 
   const ticketRes = await fetchWithTimeout(
-    ticket[1],
+    ticket,
     { "User-Agent": UA, Referer: page.url },
     15000
   );
   if (!ticketRes.ok) throw new Error(`Ticket ${ticketRes.status}`);
   const buf = await ticketRes.arrayBuffer();
 
-  const url = decryptTicket(ticket[1], buf);
+  const url = decryptTicket(ticket, buf);
   if (!url.startsWith("https://") || !url.includes(".m3u8")) {
     throw new Error("Bad stream URL");
   }
