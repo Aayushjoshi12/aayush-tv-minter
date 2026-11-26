@@ -349,6 +349,15 @@ module.exports = async (req, res) => {
         episodes = parseCategoryPage(html);
         hasMore = /\/page\/\d+\//.test(html) && /rel="next"|>Next</.test(html);
       }
+      // Newest first, whichever path supplied the episodes: the API
+      // returns its cards oldest-first (Dil Ki showed 24/25/26 Nov),
+      // while the category page is newest-first — the show page
+      // treats episodes[0] as the latest (header + Play latest).
+      episodes.sort(function (a, b) {
+        const ta = Date.parse(a.date || "");
+        const tb = Date.parse(b.date || "");
+        return (isNaN(tb) ? -Infinity : tb) - (isNaN(ta) ? -Infinity : ta);
+      });
       return json(res, 200, { show: slug, page: pageNum, episodes, hasMore });
     } catch (e) {
       return json(res, 502, { error: "show fetch failed: " + e.message });
