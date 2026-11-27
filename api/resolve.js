@@ -807,16 +807,6 @@ const BACKUPS = {
     {
       kind: "embed",
       source: "Matchora",
-      url: "https://matchora.st/embed/channel/1913128"
-    },
-    {
-      kind: "embed",
-      source: "CDNlive",
-      url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Eurosport%201%20FHD%20UK&code=&user=cdnlivetv&plan=free"
-    },
-    {
-      kind: "embed",
-      source: "Matchora",
       url: "https://matchora.st/embed/channel/547746"
     },
     {
@@ -831,16 +821,6 @@ const BACKUPS = {
     }
   ],
   "eurosport-2": [
-    {
-      kind: "embed",
-      source: "Matchora",
-      url: "https://matchora.st/embed/channel/1913126"
-    },
-    {
-      kind: "embed",
-      source: "CDNlive",
-      url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Eurosport%202%20FHD%20UK&code=&user=cdnlivetv&plan=free"
-    },
     {
       kind: "embed",
       source: "Matchora",
