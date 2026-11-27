@@ -1296,12 +1296,18 @@ async function moviesModSearch(query) {
     if (seen.has(key)) continue;
     seen.add(key);
     const site = MODLIST_SITES[e.site] || MODLIST_SITES.mm;
-    // Poster paths in the index are relative to
-    // <site>/wp-content/uploads/ (compressed to keep the 5MB index
-    // splittable for pushes); rebuild the full URL here.
-    const poster = e.p
-      ? `${site.base}/wp-content/uploads/${e.p}`
-      : "";
+    // Poster paths in the index are usually relative to
+    // <site>/wp-content/uploads/ — but MoviesMod's sitemap
+    // carries ABSOLUTE image URLs (21,754 of 31,285 entries),
+    // so a blind prepend doubles the URL
+    // (.../uploads/https://moviesmod.free/...) and the
+    // poster 404s (Vision Quest 1985 was one of them). An
+    // absolute URL is used as-is — it is the URL the site
+    // itself publishes — and only a relative path is rebuilt
+    // on the site's live domain.
+    const poster = !e.p ? "" : /^https?:\/\//i.test(e.p)
+      ? e.p
+      : `${site.base}/wp-content/uploads/${e.p}`;
     results.push({
       title,
       year,
