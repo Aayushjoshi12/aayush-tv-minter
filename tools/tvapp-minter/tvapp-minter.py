@@ -17,6 +17,15 @@ this service mints and serves the plain playlist with CORS *. The player still
 needs hls.js with a segment loader that strips the 33-byte WebP header
 (see stream.html on the site).
 
+/ai-find (plain-words game lookup for the site's "Ask in plain words" box):
+  tier 1 is local — nickname aliases + filler-word stripping + fuzzy title
+  matching against the catalog, no key needed. Tier 2 is Groq
+  (openai/gpt-oss-120b, the same model as FootballBot) which parses the
+  teams out of free text; it runs only when tier 1 finds nothing, and only
+  when GROQ_API_KEY is set in the service environment (systemd
+  EnvironmentFile). A missing/failed Groq call degrades to tier 1 only —
+  the endpoint never fails just because the AI is unavailable.
+
 No session token or key is ever logged or stored on disk. Sessions live only
 in memory and expire after ~5h.
 """
@@ -24,6 +33,7 @@ import asyncio
 import base64
 import gzip
 import json
+import os
 import re
 import time
 import unicodedata
@@ -191,6 +201,210 @@ async def find(home: str = Query(""), away: str = Query("")):
         "date": m.get("date"),
         "endsAt": m.get("endsAt"),
         "stream": "/stream?id=" + str(m["id"]),
+    }
+
+
+# --- plain-words game lookup (/ai-find) -------------------------------------
+# Tier 1: local fuzzy matching (aliases + filler stripping). Tier 2: Groq
+# parses the teams out of free text; only when tier 1 finds nothing.
+
+_ALIASES = {
+    "barca": "barcelona", "blaugrana": "barcelona",
+    "madrid": "real madrid", "real": "real madrid",
+    "atleti": "atletico madrid", "atletico": "atletico madrid",
+    "man utd": "manchester united", "man united": "manchester united",
+    "man city": "manchester city", "city": "manchester city",
+    "spurs": "tottenham", "tottenham hotspur": "tottenham",
+    "juve": "juventus", "inter": "inter milan",
+    "internazionale": "inter milan", "milan": "ac milan",
+    "rossoneri": "ac milan", "bayern": "bayern munich",
+    "dortmund": "borussia dortmund", "bvb": "borussia dortmund",
+    "psg": "paris saint-germain", "paris": "paris saint-germain",
+    "psv": "psv eindhoven", "sporting": "sporting cp",
+}
+
+_FILLER = {
+    "who", "is", "are", "playing", "play", "plays", "tonight", "today",
+    "tomorrow", "live", "match", "game", "watch", "the", "a", "an", "show",
+    "me", "find", "please", "for", "of", "on", "at", "vs", "v", "versus",
+    "against", "stream", "streaming", "where", "when", "can", "i", "get",
+    "this", "weekend", "now",
+}
+
+
+def _expand_aliases(text):
+    """Replace a known nickname with the full team name (longest first)."""
+    for nick in sorted(_ALIASES, key=len, reverse=True):
+        if text == nick or text.startswith(nick + " ") or text.endswith(" " + nick) \
+                or (" " + nick + " ") in text:
+            text = text.replace(nick, _ALIASES[nick])
+    return text
+
+
+def _strip_filler(text):
+    words = [w for w in text.split() if w not in _FILLER]
+    return " ".join(words)
+
+
+def _find_single(data, team):
+    """Best match for one team name: live first, then soonest upcoming."""
+    tn = _norm(team)
+    if not tn:
+        return None
+    now = time.time() * 1000
+    best = None
+    for m in data:
+        title = _norm(m.get("title") or "")
+        if tn not in title:
+            continue
+        date = m.get("date") or 0
+        live = date <= now < (m.get("endsAt") or date + 3 * 3600 * 1000)
+        # live beats upcoming; among equals, the soonest kickoff wins
+        key = (0 if live else 1, abs(date - now))
+        if best is None or key < best[0]:
+            best = (key, m)
+    return best[1] if best else None
+
+
+def _tier1(data, q):
+    """Local parse: returns a match or None. No network, no key."""
+    text = _expand_aliases(_norm(q))
+    if not text:
+        return None, None
+    # "A vs B" / "A - B" / "A against B"
+    for sep in (" vs ", " v ", " - ", " against "):
+        if sep in text:
+            a, b = text.split(sep, 1)
+            m = _find_match(data, _strip_filler(a), _strip_filler(b))
+            if m:
+                return m, (a.strip(), b.strip())
+            break
+    cleaned = _strip_filler(text)
+    # two-team guess: try the first two content words as separate teams
+    words = cleaned.split()
+    if len(words) >= 2:
+        m = _find_match(data, words[0], " ".join(words[1:]))
+        if m:
+            return m, (words[0], " ".join(words[1:]))
+        m = _find_match(data, " ".join(words[:-1]), words[-1])
+        if m:
+            return m, (" ".join(words[:-1]), words[-1])
+    # single team
+    m = _find_single(data, cleaned)
+    if m:
+        return m, (cleaned, None)
+    return None, None
+
+
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+GROQ_MODEL = "openai/gpt-oss-120b"
+
+
+async def _groq_parse(client, q):
+    """Ask Groq for the teams in free text. Returns (home, away) or None."""
+    key = os.environ.get("GROQ_API_KEY", "").strip()
+    if not key:
+        return None
+    try:
+        r = await client.post(
+            GROQ_URL,
+            json={
+                "model": GROQ_MODEL,
+                "temperature": 0,
+                "max_tokens": 120,
+                "response_format": {"type": "json_object"},
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "You parse football match requests. Reply with JSON only: "
+                            '{"home": "<full team name>", "away": "<full team name>"} '
+                            "when two teams are named, or "
+                            '{"team": "<full team name>"} when only one team is named. '
+                            "Use full official team names (e.g. Barcelona, Real Madrid, "
+                            "Manchester United). If no team is named, reply {}."
+                        ),
+                    },
+                    {"role": "user", "content": q},
+                ],
+            },
+            headers={"Authorization": "Bearer " + key,
+                     "Content-Type": "application/json"},
+            timeout=12,
+        )
+        if not r.is_success:
+            return None
+        content = r.json()["choices"][0]["message"]["content"]
+        parsed = json.loads(content)
+        home, away = parsed.get("home"), parsed.get("away")
+        if home and away:
+            return home, away
+        if parsed.get("team"):
+            return parsed["team"], None
+        return None
+    except Exception:
+        return None
+
+
+def _suggestions(data, limit=5):
+    """A few live matches to offer when nothing matches (football first)."""
+    now = time.time() * 1000
+    live = [m for m in data
+            if (m.get("date") or 0) <= now < (m.get("endsAt") or (m.get("date") or 0) + 3 * 3600 * 1000)]
+    live.sort(key=lambda m: (0 if (m.get("category") or "") == "football" else 1,
+                             m.get("date") or 0))
+    return [{"id": m["id"], "title": m.get("title"), "date": m.get("date"),
+             "category": m.get("category")}
+            for m in live[:limit]]
+
+
+def _title_teams(title):
+    """Clean 'Home vs Away' display names from a catalog title."""
+    for sep in (" vs ", " - "):
+        if sep in (title or ""):
+            a, b = title.split(sep, 1)
+            return a.strip(), b.strip()
+    return None, None
+
+
+@app.get("/ai-find")
+async def ai_find(q: str = Query("")):
+    q = (q or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="ask about a match in plain words")
+    data = await get_matches()
+    m, teams = _tier1(data, q)
+    used_ai = False
+    if not m:
+        async with _client() as client:
+            parsed = await _groq_parse(client, q)
+        if parsed:
+            used_ai = True
+            home, away = parsed
+            if away:
+                m = _find_match(data, home, away)
+            else:
+                m = _find_single(data, home)
+            teams = parsed
+    if not m:
+        return JSONResponse(
+            {"detail": "no match found", "suggestions": _suggestions(data)},
+            status_code=404,
+        )
+    # Display names come from the match's own title when possible — the
+    # raw parsed parts can be messy ("real" vs "madrid madrid derby").
+    th, ta = _title_teams(m.get("title") or "")
+    home, away = (teams or (None, None)) if teams else (None, None)
+    return {
+        "id": m["id"],
+        "title": m.get("title"),
+        "category": m.get("category"),
+        "date": m.get("date"),
+        "endsAt": m.get("endsAt"),
+        "stream": "/stream?id=" + str(m["id"]),
+        "home": th or home,
+        "away": ta or away,
+        "ai": used_ai,
     }
 
 

@@ -10,8 +10,13 @@
 # - GET /stream?id=<numeric> -> plain live HLS playlist for that match
 #   (mints a session on thetvapp.pk, mode "native" first; "enc" + AES-GCM
 #   decrypt is the fallback). No token or key is ever logged or stored.
-# - GET /fallback?id=... -> emergency direct URL, only when the session
-#   enables it (usually 404 — the main path is the route).
+# - GET /ai-find?q=<plain words> -> the match for "barca vs madrid tonight",
+#   "who is chelsea playing", "barca", etc. Tier 1 matches locally (nicknames
+#   + fuzzy titles, no key); tier 2 asks Groq (gpt-oss-120b, same model as
+#   FootballBot) to parse the teams, only when tier 1 finds nothing. Returns
+#   {id, title, date, stream, home, away, ai} or 404 + live suggestions.
+#   Needs GROQ_API_KEY in /opt/tvapp/.env (see step 3b); without it the
+#   endpoint still works via tier 1 only.
 #
 # IMPORTANT — IP BINDING
 # The session is bound to the IP that mints it: feed.bin (enc mode) returns
@@ -39,6 +44,19 @@ sudo python3 -m venv /opt/tvapp/.venv
 sudo /opt/tvapp/.venv/bin/pip install -q fastapi uvicorn httpx cryptography
 sudo chown -R tvapp:tvapp /opt/tvapp/.venv
 
+# 3b. Groq key for /ai-find (the AI tier). Copy the FootballBot's key from
+#     its .env on this VM into the tvapp service env — NEVER print it, never
+#     put it in the repo, never paste it anywhere. The file must exist
+#     (even if empty) or systemd refuses to start the service.
+#     sudo grep -h '^GROQ_API_KEY=' ~/footballbot/.env /home/*/footballbot/.env /opt/footballbot/.env 2>/dev/null | head -1 > /tmp/groqkey
+#     sudo install -o tvapp -g tvapp -m 600 /tmp/groqkey /opt/tvapp/.env
+#     sudo shred -u /tmp/groqkey
+#     (If no GROQ_API_KEY is found on the VM, create an empty file instead:
+#      sudo install -o tvapp -g tvapp -m 600 /dev/null /opt/tvapp/.env
+#      — /ai-find then works via its local tier only.)
+#     Re-copy the service file too when updating (it now has EnvironmentFile):
+#     sudo curl -sL https://raw.githubusercontent.com/Aayushjoshi12/aayush-tv-minter/main/tools/tvapp-minter/tvapp-minter.service -o /etc/systemd/system/tvapp-minter.service
+
 # 4. Install + start the service (first install) or restart (update)
 sudo systemctl daemon-reload
 sudo systemctl enable tvapp-minter
@@ -62,5 +80,9 @@ sudo systemctl status tvapp-minter --no-pager | head -15
 #    curl -s http://127.0.0.1:8807/matches | head -c 300
 #    curl -s "http://127.0.0.1:8807/stream?id=<live id>" | head -5
 #       -> must start with #EXTM3U and list https://p19-common-sign.tiktokcdn-eu.com/... URLs
+#    curl -s "http://127.0.0.1:8807/ai-find?q=barca"
+#       -> {"id": ..., "title": "Deportivo vs Barcelona", ..., "ai": false}
+#    curl -s "http://127.0.0.1:8807/ai-find?q=who%20is%20chelsea%20playing"
+#       -> the live Forest vs Chelsea match (or whichever is live then)
 #    curl -s https://mret.balenshah.tech/tvapp-api/health
 #    curl -s "https://mret.balenshah.tech/tvapp-api/stream?id=<live id>" | head -5
