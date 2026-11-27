@@ -17,6 +17,14 @@
 #   {id, title, date, stream, home, away, ai} or 404 + live suggestions.
 #   Needs GROQ_API_KEY in /opt/tvapp/.env (see step 3b); without it the
 #   endpoint still works via tier 1 only.
+# - GET /ai-parse?q=<plain words> -> just the teams, no catalog lookup:
+#   {home, away, ai} or {home, ai} or 404. The site's AI box uses this,
+#   then searches the 1xBet feed itself, so the Scoreboard shows 1xBet
+#   matches only.
+# - GET /stream-check?id=<numeric> -> {available: true, name} when a session
+#   mints (native, then enc fallback), {available: false, soon: true, ...}
+#   before kickoff, 404 when no stream exists. The site shows the Watch
+#   button only when this says available.
 #
 # IMPORTANT — IP BINDING
 # The session is bound to the IP that mints it: feed.bin (enc mode) returns

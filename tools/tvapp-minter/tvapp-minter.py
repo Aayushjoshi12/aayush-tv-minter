@@ -233,12 +233,38 @@ _FILLER = {
 
 
 def _expand_aliases(text):
-    """Replace a known nickname with the full team name (longest first)."""
-    for nick in sorted(_ALIASES, key=len, reverse=True):
-        if text == nick or text.startswith(nick + " ") or text.endswith(" " + nick) \
-                or (" " + nick + " ") in text:
-            text = text.replace(nick, _ALIASES[nick])
-    return text
+    """Replace known nicknames with full team names, one pass over words.
+    A word already inside a full team name ("real madrid") is left alone,
+    and an inserted expansion is never re-expanded ("real" inside the
+    just-inserted "real madrid" must not become "real madrid madrid")."""
+    words = text.split()
+    multi_alias = sorted(
+        [(k.split(), v) for k, v in _ALIASES.items() if " " in k],
+        key=lambda kv: -len(kv[0]))
+    full = sorted(
+        [v.split() for v in set(_ALIASES.values()) if " " in v],
+        key=len, reverse=True)
+    single = {k: v for k, v in _ALIASES.items() if " " not in k}
+    out = []
+    i = 0
+    while i < len(words):
+        done = False
+        for phrase, repl in [(f, None) for f in full] + [(a, r) for a, r in multi_alias]:
+            n = len(phrase)
+            if words[i:i + n] == phrase:
+                out.extend(repl.split() if repl else phrase)
+                i += n
+                done = True
+                break
+        if done:
+            continue
+        w = words[i]
+        if w in single:
+            out.extend(single[w].split())
+        else:
+            out.append(w)
+        i += 1
+    return " ".join(out)
 
 
 def _strip_filler(text):
@@ -365,6 +391,71 @@ def _title_teams(title):
             a, b = title.split(sep, 1)
             return a.strip(), b.strip()
     return None, None
+
+
+def _parse_teams(q):
+    """Parse plain words into (home, away) or (team, None). No catalog —
+    used by /ai-parse so the site can search the 1xBet feed with the teams."""
+    text = _expand_aliases(_norm(q))
+    if not text:
+        return None
+    for sep in (" vs ", " v ", " - ", " against "):
+        if sep in text:
+            a, b = text.split(sep, 1)
+            return (_strip_filler(a).strip(), _strip_filler(b).strip())
+    cleaned = _strip_filler(text)
+    words = cleaned.split()
+    if len(words) >= 2:
+        return (words[0], " ".join(words[1:]))
+    if cleaned:
+        return (cleaned, None)
+    return None
+
+
+@app.get("/ai-parse")
+async def ai_parse(q: str = Query("")):
+    """Parse plain words into team names only — no catalog lookup.
+    The site's AI box uses this, then searches the 1xBet feed itself,
+    so the Scoreboard shows 1xBet matches only."""
+    q = (q or "").strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="ask about a match in plain words")
+    parsed = _parse_teams(q)
+    if parsed and parsed[1]:
+        return {"home": parsed[0], "away": parsed[1], "ai": False}
+    # One team or no parse: let Groq try (it may find two teams).
+    async with _client() as client:
+        g = await _groq_parse(client, q)
+    if g:
+        return {"home": g[0], "away": g[1], "ai": True}
+    if parsed:
+        return {"home": parsed[0], "away": parsed[1], "ai": False}
+    raise HTTPException(status_code=404, detail="no team found in those words")
+
+
+@app.get("/stream-check")
+async def stream_check(id: str = Query(...)):
+    """Is there a playable stream for this TVApp id right now?
+    Lightweight: mints a session (cached 4h30m) but does not fetch the
+    playlist. The site shows the Watch button only when this says
+    available — a 1xBet video id alone does not count."""
+    if not re.fullmatch(r"\d{1,12}", id or ""):
+        raise HTTPException(status_code=400, detail="bad stream id")
+    for mode in ("native", "enc"):
+        try:
+            session = await _get_session(id, mode)
+            return {"available": True, "name": session.get("name")}
+        except _Soon as e:
+            d = e.data
+            return {"available": False, "soon": True,
+                    "startsAt": d.get("startsAt"), "openAt": d.get("openAt")}
+        except HTTPException as exc:
+            if exc.status_code == 404:
+                continue
+            raise
+        except Exception:
+            continue
+    return JSONResponse({"available": False}, status_code=404)
 
 
 @app.get("/ai-find")
