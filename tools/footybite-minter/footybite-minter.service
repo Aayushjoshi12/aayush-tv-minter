@@ -1,0 +1,16 @@
+[Unit]
+Description=Footybite minter — Footybite stream URL minter (serverFn + seg fetch)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=footybite
+WorkingDirectory=/opt/footybite
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/footybite/.venv/bin/python -m uvicorn footybite-minter:app --host 127.0.0.1 --port 8808
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
