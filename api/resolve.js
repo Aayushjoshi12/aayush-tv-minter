@@ -1721,12 +1721,6 @@ const DIRECT = {
       url: "https://amg19223-amg19223c4-amgplt0351.playout.now3.amagi.tv/playlist/amg19223-amg19223c4-amgplt0351/playlist.m3u8"
     }
   ],
-  "cbs-sports-hq": [
-    {
-      source: "CBS Sports HQ (direct)",
-      url: "https://jmp2.uk/plu-5e9f2c05172a0f0007db4786.m3u8"
-    }
-  ],
   "nbc-sports-now": [
     {
       source: "NBC Sports NOW (direct)",
