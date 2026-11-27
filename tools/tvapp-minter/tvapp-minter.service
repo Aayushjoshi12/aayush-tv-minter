@@ -1,0 +1,16 @@
+[Unit]
+Description=TVApp minter — TheTVApp stream URL minter (session + decrypt)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tvapp
+WorkingDirectory=/opt/tvapp
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/tvapp/.venv/bin/python -m uvicorn tvapp-minter:app --host 127.0.0.1 --port 8807
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
