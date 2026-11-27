@@ -808,6 +808,26 @@ const BACKUPS = {
       kind: "embed",
       source: "Matchora",
       url: "https://matchora.st/embed/channel/1913128"
+    },
+    {
+      kind: "embed",
+      source: "CDNlive",
+      url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Eurosport%201%20FHD%20UK&code=&user=cdnlivetv&plan=free"
+    },
+    {
+      kind: "embed",
+      source: "Matchora",
+      url: "https://matchora.st/embed/channel/547746"
+    },
+    {
+      kind: "embed",
+      source: "104game",
+      url: "https://104game.click/player/1/15"
+    },
+    {
+      kind: "embed",
+      source: "TVNow247",
+      url: "https://tvnow247.top/embed/57/"
     }
   ],
   "eurosport-2": [
@@ -815,6 +835,26 @@ const BACKUPS = {
       kind: "embed",
       source: "Matchora",
       url: "https://matchora.st/embed/channel/1913126"
+    },
+    {
+      kind: "embed",
+      source: "CDNlive",
+      url: "https://cdnlivetv.tv/api/v1/channels/player/?name=Eurosport%202%20FHD%20UK&code=&user=cdnlivetv&plan=free"
+    },
+    {
+      kind: "embed",
+      source: "Matchora",
+      url: "https://matchora.st/embed/channel/547747"
+    },
+    {
+      kind: "embed",
+      source: "104game",
+      url: "https://104game.click/player/1/16"
+    },
+    {
+      kind: "embed",
+      source: "TVNow247",
+      url: "https://tvnow247.top/embed/58/"
     }
   ],
   "espn-3": [
@@ -979,6 +1019,21 @@ const BACKUPS = {
       kind: "embed",
       source: "Matchora",
       url: "https://matchora.st/embed/channel/2011095"
+    },
+    {
+      kind: "embed",
+      source: "Matchora",
+      url: "https://matchora.st/embed/channel/1912893"
+    },
+    {
+      kind: "embed",
+      source: "Matchora",
+      url: "https://matchora.st/embed/channel/1917300"
+    },
+    {
+      kind: "embed",
+      source: "TVNow247",
+      url: "https://tvnow247.top/embed/134/"
     }
   ],
   "bein-max-4-francais": [
