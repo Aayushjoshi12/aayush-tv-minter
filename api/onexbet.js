@@ -465,6 +465,11 @@ function normalizeFeatured(g) {
     timerSec: (scores.timer && typeof scores.timer.timeSec === "number") ? scores.timer.timeSec : null,
     stats: tabloStats(scores),
     cricket: ck ? cricketRaw(scores) : null,
+    // Stream: the raw live entry carries video {enabled, id} —
+    // the id is the DR_ id the minter mints from (same as the
+    // Discord bot's Watch link). Added 27 Nov 2026 for the
+    // site Scoreboard page; null when no stream exists.
+    videoId: (g.video && g.video.id) ? String(g.video.id) : null,
   };
 }
 
@@ -531,6 +536,9 @@ function normalizeNpl(g, liveById, liveByName) {
   const ck = scores ? cricketLive(scores) : null;
   if (ck && ck.clock) clock = ck.clock;
   const info = g.matchInfoObj || {};
+  // Stream id: the raw entry's video {enabled, id}, else the
+  // live-feed copy's (same DR_ id the bot's Watch link uses).
+  const vid = (g.video && g.video.id) || (liveCopy && liveCopy.video && liveCopy.video.id) || null;
   return {
     id: String(id),
     league: "Nepal Premier League",
@@ -545,6 +553,7 @@ function normalizeNpl(g, liveById, liveByName) {
     format: info.matchFormat || "T20",
     timerSec: (scores && scores.timer && typeof scores.timer.timeSec === "number") ? scores.timer.timeSec : null,
     stats: tabloStats(scores),
+    videoId: vid ? String(vid) : null,
   };
 }
 
@@ -758,6 +767,7 @@ function normalizeUefaLine(g, league) {
     format: "",
     timerSec: (scores && scores.timer && typeof scores.timer.timeSec === "number") ? scores.timer.timeSec : null,
     stats: tabloStats(scores),
+    videoId: (g.video && g.video.id) ? String(g.video.id) : null,
   };
 }
 
@@ -826,7 +836,7 @@ function detailFromInfo(info) {
   const weather = mi.weatherDescription
     ? mi.weatherDescription + (mi.temperature ? " · " + mi.temperature : "")
     : null;
-  return {
+  const out = {
     constId:
       info.constId != null
         ? String(info.constId)
@@ -843,6 +853,11 @@ function detailFromInfo(info) {
     ),
     video: Boolean(info.video && info.video.enabled),
   };
+  // Only include videoId when gameInfo actually carries one —
+  // the merge in gameDetail must never overwrite the raw live
+  // entry's id with null (the raw entry is the authority).
+  if (info.video && info.video.id) out.videoId = String(info.video.id);
+  return out;
 }
 
 async function gameDetail(base, g) {
@@ -862,6 +877,9 @@ async function gameDetail(base, g) {
     extra = {};
   }
   const merged = Object.assign({}, g, extra);
+  // The raw live entry is the authority for the stream id —
+  // never let gameInfo's copy replace it.
+  if (g.videoId) merged.videoId = g.videoId;
   addCricketTarget(merged);
   // NPL cricket only: the full scorecard (striker, bowler,
   // partnership...) comes from the NPL official API — the
