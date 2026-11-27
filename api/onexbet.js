@@ -43,10 +43,11 @@
 //   and the hit is enriched with live gameInfo (venue, weather,
 //   format, constId). Text q = team/league name: live games
 //   (games1x2) plus the NPL and UEFA fixtures the scoreboard
-//   already knows. The line feed has no general search, so
-//   upcoming coverage is NPL + UEFA only — the reply never
-//   pretends otherwise. A tap on a search row calls the same
-//   mode with that game's id to get its full detail.
+//   already knows, plus the upcoming fixtures of the known big
+//   leagues below (their champ ids are read from the line feed,
+//   which has no general search — a league joins the list only
+//   when its champ id is verified live). A tap on a search row
+//   calls the same mode with that game's id to get its full detail.
 // GET /api/onexbet?debug=1
 //   -> + { tried: [mirrors attempted] }
 //
@@ -712,18 +713,34 @@ function isUefaLiga(name) {
 
 function findLigaGames(menu, champId) {
   if (!Array.isArray(menu)) return null;
+  // A league can live under a country node (Spain -> LaLiga) rather
+  // than at the top level, and a bare menu node with the same id
+  // can appear before the one carrying the games — so prefer the
+  // node that actually has games, and only fall back to a bare one.
+  let bare = null;
+  const check = (node) => {
+    if (!node || node.id !== champId) return null;
+    const games = Array.isArray(node.games) ? node.games : [];
+    if (games.length)
+      return { name: node.name || "UEFA", games };
+    if (!bare) bare = { name: node.name || "UEFA", games: [] };
+    return null;
+  };
   for (const section of menu) {
     const sports = (section && section.sports) || [];
     for (const sport of sports) {
       const ligas = (sport && sport.ligas) || [];
       for (const liga of ligas) {
-        if (liga && liga.id === champId) {
-          return { name: liga.name || "UEFA", games: Array.isArray(liga.games) ? liga.games : [] };
+        const hit = check(liga);
+        if (hit) return hit;
+        for (const sub of (liga && liga.subLigas) || []) {
+          const subHit = check(sub);
+          if (subHit) return subHit;
         }
       }
     }
   }
-  return null;
+  return bare;
 }
 
 // Line-feed game (fixtures + any live game still listed): same
@@ -797,17 +814,9 @@ async function uefaGames(base) {
   // Upcoming fixtures for the same UEFA champs (line feed).
   for (const cid of champIds.slice(0, UEFA_MAX_CHAMPS)) {
     try {
-      const menu = await fetchJson(
-        base,
-        "/service-api/main-line-feed/v3/leftMenuSports?country=130&fcountry=130&gr=909&lng=en&ref=1" +
-          "&selectedMs=1.1." + cid + ",2.1." + cid + ",10.1." + cid,
-        "/en/line/football"
-      );
-      const found = findLigaGames(menu, cid);
-      if (!found) continue;
-      for (const g of found.games) {
-        const ng = normalizeUefaLine(g, found.name);
-        if (ng && !out.some((x) => sameTeams(x, ng))) out.push(ng);
+      const games = await lineGamesForChamp(base, cid, "UEFA");
+      for (const ng of games) {
+        if (!out.some((x) => sameTeams(x, ng))) out.push(ng);
       }
     } catch (e) {
       // One champ failing must not break the section.
@@ -822,6 +831,96 @@ async function uefaGames(base) {
 }
 
 // --- search mode ---------------------------------------------------
+// Known big-league champs for the search's upcoming-fixtures
+// fallback. Champ ids are 1xBet liga ids, verified live from the
+// line feed (28 Nov 2026): LaLiga's feed lists Deportivo vs
+// Barcelona (id 769331096, Sun 29 Nov 21:00 NPT) among 24 games,
+// Bundesliga lists 19, the Champions League 18. A league joins
+// the list only when its champ id is verified the same way —
+// note the domestic leagues live under country nodes in the menu
+// (Spain -> LaLiga), which findLigaGames now descends into.
+const KNOWN_CHAMPS = [
+  { id: 127733, name: "Spain. La Liga" },
+  { id: 88637, name: "England. Premier League" },
+  { id: 110163, name: "Italy. Serie A" },
+  { id: 96463, name: "Germany. Bundesliga" },
+  { id: 12821, name: "France. Ligue 1" },
+  { id: 3007689, name: "Portugal. Primeira Liga" },
+  { id: 118587, name: "UEFA Champions League" },
+];
+
+// Upcoming fixtures for one champ, from the line feed.
+// (The UEFA section used to inline this per champ; it now calls
+// this too.)
+async function lineGamesForChamp(base, champId, leagueName) {
+  const menu = await fetchJson(
+    base,
+    "/service-api/main-line-feed/v3/leftMenuSports?country=130&fcountry=130&gr=909&lng=en&ref=1" +
+      "&selectedMs=1.1." + champId + ",2.1." + champId + ",10.1." + champId,
+    "/en/line/football"
+  );
+  const found = findLigaGames(menu, champId);
+  if (!found) return [];
+  return found.games
+    .map((g) => normalizeUefaLine(g, found.name || leagueName))
+    .filter(Boolean);
+}
+
+// Nicknames for the search box ("barca" must find Barcelona —
+// "barca" is not a substring of "barcelona", so plain matching
+// never finds it). Same map as the TVApp minter's tier 1, one
+// pass over words: a word already inside a full team name is
+// left alone, and an inserted expansion is never re-expanded
+// ("real" inside the just-inserted "real madrid" must not
+// become "real madrid madrid").
+const SEARCH_ALIASES = {
+  "barca": "barcelona", "blaugrana": "barcelona",
+  "madrid": "real madrid", "real": "real madrid",
+  "atleti": "atletico madrid", "atletico": "atletico madrid",
+  "man utd": "manchester united", "man united": "manchester united",
+  "man city": "manchester city", "city": "manchester city",
+  "spurs": "tottenham", "tottenham hotspur": "tottenham",
+  "juve": "juventus",
+  "rossoneri": "milan", "ac milan": "milan",
+  "bayern": "bayern munich",
+  "dortmund": "borussia dortmund", "bvb": "borussia dortmund",
+  "psg": "paris saint-germain", "paris": "paris saint-germain",
+  "psv": "psv eindhoven", "sporting": "sporting cp",
+};
+
+function expandSearchAliases(text) {
+  const words = String(text || "").toLowerCase().split(/\s+/).filter(Boolean);
+  const entries = Object.entries(SEARCH_ALIASES);
+  const multi = entries
+    .filter(([k]) => k.includes(" "))
+    .map(([k, v]) => [k.split(" "), v])
+    .sort((a, b) => b[0].length - a[0].length);
+  const full = [...new Set(entries.map(([, v]) => v).filter((v) => v.includes(" ")))]
+    .map((v) => v.split(" "))
+    .sort((a, b) => b.length - a.length);
+  const single = Object.fromEntries(entries.filter(([k]) => !k.includes(" ")));
+  const out = [];
+  let i = 0;
+  while (i < words.length) {
+    let done = false;
+    for (const [phrase, repl] of [...full.map((f) => [f, null]), ...multi]) {
+      const n = phrase.length;
+      if (words.slice(i, i + n).join(" ") === phrase.join(" ")) {
+        out.push(...(repl ? repl.split(" ") : phrase));
+        i += n;
+        done = true;
+        break;
+      }
+    }
+    if (done) continue;
+    const w = words[i];
+    if (single[w]) out.push(...single[w].split(" "));
+    else out.push(w);
+    i += 1;
+  }
+  return out.join(" ");
+}
+
 // Find a game by team/league name or by 1xBet game ID, with the
 // full detail 1xBet shows for it. gameInfo (live feed) carries
 // venue, weather, format, constId and line-up flags — but NO
@@ -893,6 +992,26 @@ async function gameDetail(base, g) {
     } catch (e) {}
   }
   return merged;
+}
+
+async function findUpcomingById(base, id) {
+  const sources = [];
+  try {
+    const res = await nplGames(base);
+    sources.push(...res.games);
+  } catch (e) {}
+  try {
+    sources.push(...(await uefaGames(base)));
+  } catch (e) {}
+  try {
+    const line = await Promise.all(
+      KNOWN_CHAMPS.map((c) =>
+        lineGamesForChamp(base, c.id, c.name).catch(() => [])
+      )
+    );
+    for (const games of line) sources.push(...games);
+  } catch (e) {}
+  return sources.find((g) => String(g.id) === String(id)) || null;
 }
 
 async function searchGames(base, q) {
@@ -975,15 +1094,39 @@ async function searchGames(base, q) {
         return { games: [], detail: Object.assign(d, detailFromInfo(info)) };
       }
     } catch (e) {}
+    // Not in the live list and no live gameInfo (an upcoming game):
+    // look it up in the line fixtures the text search already
+    // knows — gameInfo 204s for future games, so the line feed is
+    // the only detail source for them.
+    try {
+      const lineHit = await findUpcomingById(base, query);
+      if (lineHit) {
+        addCricketTarget(lineHit);
+        return { games: [], detail: lineHit };
+      }
+    } catch (e) {}
     return { games: [], detail: null };
   }
   // Text search: live games by team/league name, then the NPL
-  // and UEFA fixtures the scoreboard already fetches.
-  const needle = query.toLowerCase();
-  const match = (g) =>
-    String(g.home || "").toLowerCase().includes(needle) ||
-    String(g.away || "").toLowerCase().includes(needle) ||
-    String(g.league || "").toLowerCase().includes(needle);
+  // and UEFA fixtures the scoreboard already fetches, then the
+  // upcoming fixtures of the known big leagues (line feed).
+  // Nicknames are expanded first ("barca" -> "barcelona"), and
+  // matching is word-based so a two-team query ("barcelona
+  // deportivo") finds the fixture: every content word must appear
+  // somewhere across the teams/league. Filler words never count.
+  const words = expandSearchAliases(query)
+    .split(/\s+/)
+    .filter((w) => w && !["vs", "v", "against", "the", "a", "an"].includes(w));
+  const match = (g) => {
+    const hay = (
+      String(g.home || "") +
+      " " +
+      String(g.away || "") +
+      " " +
+      String(g.league || "")
+    ).toLowerCase();
+    return words.length > 0 && words.every((w) => hay.includes(w));
+  };
   const out = [];
   const push = (g) => {
     if (!g || !match(g)) return;
@@ -1003,6 +1146,27 @@ async function searchGames(base, q) {
       uefa.forEach(push);
     } catch (e) {}
   }
+  if (out.length < SEARCH_MAX) {
+    // Upcoming fixtures of the known big leagues, all champs in
+    // parallel (one round-trip). A champ failing never breaks
+    // the search.
+    try {
+      const line = await Promise.all(
+        KNOWN_CHAMPS.map((c) =>
+          lineGamesForChamp(base, c.id, c.name).catch(() => [])
+        )
+      );
+      for (const games of line) games.forEach(push);
+    } catch (e) {}
+  }
+  // Live games first, then upcoming soonest-first (so "barca"
+  // leads with Sunday's Deportivo game, not a December one).
+  out.sort((a, b) => {
+    const ra = a.status === "live" ? 0 : 1;
+    const rb = b.status === "live" ? 0 : 1;
+    if (ra !== rb) return ra - rb;
+    return (a.startTs || 0) - (b.startTs || 0);
+  });
   return { games: out.slice(0, SEARCH_MAX), detail: null };
 }
 
