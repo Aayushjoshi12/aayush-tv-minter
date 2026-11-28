@@ -269,6 +269,17 @@ def same_teams(a, b):
 
 
 def normalize_featured(g):
+    # A malformed live entry must never kill the whole search: the
+    # mirror occasionally sends odd shapes (a list where a dict is
+    # expected), and JS's forgiving property access just yields
+    # null there — so any failure here returns None, not a throw.
+    try:
+        return _normalize_featured(g)
+    except Exception:
+        return None
+
+
+def _normalize_featured(g):
     o1 = g.get("opponent1") or {}
     o2 = g.get("opponent2") or {}
     home = o1.get("fullName") or ""
@@ -320,6 +331,13 @@ def normalize_featured(g):
 
 
 def normalize_uefa_line(g, league, sport_id):
+    try:
+        return _normalize_uefa_line(g, league, sport_id)
+    except Exception:
+        return None
+
+
+def _normalize_uefa_line(g, league, sport_id):
     sid = sport_id if _is_num(sport_id) else 1
     sname = SPORT_NAMES.get(sid, "Football")
     o1 = g.get("opponent1") or {}
@@ -654,20 +672,31 @@ async def health():
 async def search(q: str = Query(default="")):
     last_error = ""
     async with httpx.AsyncClient(trust_env=False) as client:
-        for base in MIRRORS:
+        # Mirror 1 flakes transiently (a reset / 529 on one call);
+        # it is worth one retry before falling through to mirror 2,
+        # which is down and only ever answers empty.
+        attempts = [MIRRORS[0], MIRRORS[0]] + MIRRORS[1:]
+        for attempt_no, base in enumerate(attempts):
             try:
                 r = await search_games(client, base, q)
-                return {
-                    "source": "1xbet",
-                    "league": "Search",
-                    "mirror": base,
-                    "fetchedAt": datetime.now(timezone.utc).isoformat(),
-                    "games": r["games"],
-                    "detail": r["detail"],
-                    "q": q,
-                }
             except Exception as e:
                 last_error = str(e)
+                continue
+            if attempt_no == 0 and not r["games"] and not r["detail"]:
+                # First try on mirror 1 came back empty — either a
+                # flake (every leg timed out at once) or a genuine
+                # no-match; one retry (attempts[1], mirror 1 again)
+                # tells them apart before falling to mirror 2.
+                continue
+            return {
+                "source": "1xbet",
+                "league": "Search",
+                "mirror": base,
+                "fetchedAt": datetime.now(timezone.utc).isoformat(),
+                "games": r["games"],
+                "detail": r["detail"],
+                "q": q,
+            }
     return JSONResponse(
         status_code=502,
         content={
