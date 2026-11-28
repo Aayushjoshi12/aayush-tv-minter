@@ -936,15 +936,17 @@ async function uefaGames(base) {
   } catch (e) {
     // Live list failed — upcoming fixtures below still work.
   }
-  // Upcoming fixtures for the same UEFA champs (line feed).
-  for (const cid of champIds.slice(0, UEFA_MAX_CHAMPS)) {
-    try {
-      const games = await lineGamesForChamp(base, 1, cid, "UEFA");
-      for (const ng of games) {
-        if (!out.some((x) => sameTeams(x, ng))) out.push(ng);
-      }
-    } catch (e) {
-      // One champ failing must not break the section.
+  // Upcoming fixtures for the same UEFA champs (line feed),
+  // in parallel — the sequential loop made this section the
+  // slowest part of a search on Vercel.
+  const line = await Promise.all(
+    champIds
+      .slice(0, UEFA_MAX_CHAMPS)
+      .map((cid) => lineGamesForChamp(base, 1, cid, "UEFA").catch(() => []))
+  );
+  for (const games of line) {
+    for (const ng of games) {
+      if (!out.some((x) => sameTeams(x, ng))) out.push(ng);
     }
   }
   out.sort((a, b) => {
@@ -965,13 +967,13 @@ async function uefaGames(base) {
 // note the domestic leagues live under country nodes in the menu
 // (Spain -> LaLiga), which findLigaGames now descends into.
 const KNOWN_CHAMPS = [
-  { id: 127733, name: "Spain. La Liga" },
-  { id: 88637, name: "England. Premier League" },
-  { id: 110163, name: "Italy. Serie A" },
-  { id: 96463, name: "Germany. Bundesliga" },
-  { id: 12821, name: "France. Ligue 1" },
-  { id: 3007689, name: "Portugal. Primeira Liga" },
-  { id: 118587, name: "UEFA Champions League" },
+  { sportId: 1, id: 127733, name: "Spain. La Liga" },
+  { sportId: 1, id: 88637, name: "England. Premier League" },
+  { sportId: 1, id: 110163, name: "Italy. Serie A" },
+  { sportId: 1, id: 96463, name: "Germany. Bundesliga" },
+  { sportId: 1, id: 12821, name: "France. Ligue 1" },
+  { sportId: 1, id: 3007689, name: "Portugal. Primeira Liga" },
+  { sportId: 1, id: 118587, name: "UEFA Champions League" },
 ];
 
 // Known leagues for OTHER sports, for the same upcoming-fixtures
@@ -1007,6 +1009,59 @@ async function lineGamesForChamp(base, sportId, champId, leagueName) {
   return found.games
     .map((g) => normalizeUefaLine(g, found.name || leagueName, sid))
     .filter(Boolean);
+}
+
+// Fetch one batch of champs' line fixtures in parallel, with one
+// retry per champ — the mirror drops connections under load (a
+// reset was seen locally too). When wantDebug is an array, each
+// champ's timing and outcome is recorded there, so a slow leg can
+// be diagnosed from the live server (?debug=1).
+async function fetchLineLeg(base, champs, wantDebug) {
+  const out = await Promise.all(
+    champs.map(async (c) => {
+      const t0 = Date.now();
+      const rec = wantDebug
+        ? { champ: c.id, sport: c.sportId, ms: 0, games: 0 }
+        : null;
+      if (rec) wantDebug.push(rec);
+      try {
+        const games = await lineGamesForChamp(base, c.sportId, c.id, c.name);
+        if (rec) {
+          rec.ms = Date.now() - t0;
+          rec.games = games.length;
+        }
+        return games;
+      } catch (e) {
+        // A timeout abort is not retried — the mirror is just
+        // slow for that champ right now, and a second 10s wait
+        // would hold up the whole search. Connection errors
+        // (resets) get one retry instead.
+        if (e && e.name === "AbortError") {
+          if (rec) {
+            rec.ms = Date.now() - t0;
+            rec.error = "timeout";
+          }
+          return [];
+        }
+        try {
+          const games = await lineGamesForChamp(base, c.sportId, c.id, c.name);
+          if (rec) {
+            rec.ms = Date.now() - t0;
+            rec.games = games.length;
+            rec.retried = true;
+          }
+          return games;
+        } catch (e2) {
+          if (rec) {
+            rec.ms = Date.now() - t0;
+            rec.error = String((e2 && e2.message) || e2);
+          }
+          return [];
+        }
+      }
+    })
+  );
+  return out.flat();
 }
 
 // Nicknames for the search box ("barca" must find Barcelona —
@@ -1144,28 +1199,24 @@ async function gameDetail(base, g) {
 
 async function findUpcomingById(base, id) {
   const sources = [];
+  const [nplRes, uefaRes] = await Promise.all([
+    nplGames(base).catch(() => null),
+    uefaGames(base).catch(() => []),
+  ]);
+  if (nplRes) sources.push(...nplRes.games);
+  sources.push(...uefaRes);
   try {
-    const res = await nplGames(base);
-    sources.push(...res.games);
-  } catch (e) {}
-  try {
-    sources.push(...(await uefaGames(base)));
-  } catch (e) {}
-  try {
-    const line = await Promise.all([
-      ...KNOWN_CHAMPS.map((c) =>
-        lineGamesForChamp(base, 1, c.id, c.name).catch(() => [])
-      ),
-      ...KNOWN_LEAGUES.map((l) =>
-        lineGamesForChamp(base, l.sportId, l.id, l.name).catch(() => [])
-      ),
-    ]);
-    for (const games of line) sources.push(...games);
+    const line = await fetchLineLeg(
+      base,
+      [...KNOWN_CHAMPS, ...KNOWN_LEAGUES],
+      null
+    );
+    sources.push(...line);
   } catch (e) {}
   return sources.find((g) => String(g.id) === String(id)) || null;
 }
 
-async function searchGames(base, q) {
+async function searchGames(base, q, dbg) {
   const query = String(q || "").trim();
   if (!query) return { games: [], detail: null };
   const isId = /^\d{5,}$/.test(query);
@@ -1176,31 +1227,30 @@ async function searchGames(base, q) {
   // that on 17 Nov 2026, so an ID search found only the
   // score-less gameInfo and the card showed "Live" with no score
   // and no stats. Merge featured in so both paths see it.
+  // The two live lists are fetched in parallel: one after the
+  // other doubled the search time on a slow upstream (Vercel).
+  const tLive = Date.now();
   let live = [];
-  try {
-    const data = await fetchJson(
+  const [liveData, featData] = await Promise.all([
+    fetchJson(
       base,
       "/service-api/main-live-feed/v3/games1x2?cfView=3&count=50&country=130&fcountry=130&gr=909&grMode=4&lng=en&ref=1",
       "/en/live/football"
-    );
-    if (Array.isArray(data))
-      live = data.map(normalizeFeatured).filter(Boolean);
-  } catch (e) {
-    live = [];
-  }
-  try {
-    const feat = await fetchJson(
+    ).catch(() => null),
+    fetchJson(
       base,
       "/service-api/main-live-feed/v3/topGamesByStat?" + TOP_PARAMS,
       "/en/live/football"
-    );
-    if (Array.isArray(feat)) {
-      for (const g of feat.map(normalizeFeatured).filter(Boolean)) {
-        if (!live.some((x) => x.id === g.id)) live.push(g);
-      }
+    ).catch(() => null),
+  ]);
+  if (dbg) dbg.stages.liveMs = Date.now() - tLive;
+  if (Array.isArray(liveData))
+    live = liveData.map(normalizeFeatured).filter(Boolean);
+  if (Array.isArray(featData)) {
+    for (const g of featData.map(normalizeFeatured).filter(Boolean)) {
+      if (!live.some((x) => x.id === g.id)) live.push(g);
     }
-  } catch (e) {}
-  if (isId) {
+  }  if (isId) {
     const hit = live.find((g) => g.id === query);
     if (hit) return { games: [], detail: await gameDetail(base, hit) };
     // The searched id may be an ALIAS of the live game, not the
@@ -1291,32 +1341,30 @@ async function searchGames(base, q) {
   };
   live.forEach(push);
   if (out.length < SEARCH_MAX) {
-    try {
-      const res = await nplGames(base);
-      res.games.forEach(push);
-    } catch (e) {}
+    // NPL + UEFA fixtures in parallel — they were fetched one
+    // after the other, and each slow fetch on Vercel stacked
+    // onto the next.
+    const tFix = Date.now();
+    const [nplRes, uefaRes] = await Promise.all([
+      nplGames(base).catch(() => null),
+      uefaGames(base).catch(() => []),
+    ]);
+    if (dbg) dbg.stages.fixturesMs = Date.now() - tFix;
+    if (nplRes) nplRes.games.forEach(push);
+    uefaRes.forEach(push);
   }
   if (out.length < SEARCH_MAX) {
-    try {
-      const uefa = await uefaGames(base);
-      uefa.forEach(push);
-    } catch (e) {}
-  }
-  if (out.length < SEARCH_MAX) {
-    // Upcoming fixtures of the known big leagues, all champs in
-    // parallel (one round-trip). A champ failing never breaks
-    // the search.
-    try {
-      const line = await Promise.all([
-        ...KNOWN_CHAMPS.map((c) =>
-          lineGamesForChamp(base, 1, c.id, c.name).catch(() => [])
-        ),
-        ...KNOWN_LEAGUES.map((l) =>
-          lineGamesForChamp(base, l.sportId, l.id, l.name).catch(() => [])
-        ),
-      ]);
-      for (const games of line) games.forEach(push);
-    } catch (e) {}
+    // Upcoming fixtures of the known leagues, football first
+    // then the other sports, one retry per champ (see
+    // fetchLineLeg). A champ failing never breaks the search.
+    const tLine = Date.now();
+    const line = await fetchLineLeg(
+      base,
+      [...KNOWN_CHAMPS, ...KNOWN_LEAGUES],
+      dbg ? dbg.line : null
+    );
+    if (dbg) dbg.stages.lineMs = Date.now() - tLine;
+    for (const g of line) push(g);
   }
   // Live games first, then upcoming soonest-first (so "barca"
   // leads with Sunday's Deportivo game, not a December one).
@@ -1350,7 +1398,8 @@ export default async function handler(req, res) {
     tried.push(base);
     try {
       if (search) {
-        const r = await searchGames(base, (req.query && req.query.q) || "");
+        const dbg = debug ? { line: [], stages: {} } : null;
+        const r = await searchGames(base, (req.query && req.query.q) || "", dbg);
         const out = {
           source: "1xbet",
           league: "Search",
@@ -1360,7 +1409,11 @@ export default async function handler(req, res) {
           detail: r.detail,
           q: (req.query && req.query.q) || "",
         };
-        if (debug) out.tried = tried;
+        if (debug) {
+          out.tried = tried;
+          out.lineDebug = dbg.line;
+          out.stages = dbg.stages;
+        }
         json(res, 200, out);
         return;
       }
