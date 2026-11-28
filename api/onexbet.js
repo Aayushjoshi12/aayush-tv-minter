@@ -36,7 +36,8 @@
 //   If the official fetch fails, the 1xBet list is returned
 //   unchanged — the merge never breaks the fixtures.
 // GET /api/onexbet?mode=featured
-//   -> the old featured-games list (topGamesByStat only).
+//   -> Top Games, all sports (the live list grouped by sport,
+//   up to 2 per sport, plus the featured list, capped at 12).
 // GET /api/onexbet?mode=search&q=<text>
 //   -> { games: [...], detail: {...} | null, q }
 //   Numeric q = a 1xBet game ID: the live list is searched by id
@@ -44,10 +45,11 @@
 //   format, constId). Text q = team/league name: live games
 //   (games1x2) plus the NPL and UEFA fixtures the scoreboard
 //   already knows, plus the upcoming fixtures of the known big
-//   leagues below (their champ ids are read from the line feed,
-//   which has no general search — a league joins the list only
-//   when its champ id is verified live). A tap on a search row
-//   calls the same mode with that game's id to get its full detail.
+//   leagues and the known other-sport leagues below (their champ
+//   ids are read from the line feed, which has no general search
+//   — a league joins the list only when its champ id is verified
+//   live). A tap on a search row calls the same mode with that
+//   game's id to get its full detail.
 // GET /api/onexbet?debug=1
 //   -> + { tried: [mirrors attempted] }
 //
@@ -151,14 +153,51 @@ function statusOf(scores) {
     return { status: "HT", minute };
   if (line.includes("full time") || line.includes("finished"))
     return { status: "FT", minute };
+  // Period labels are sport-specific: only football has halves.
+  // A bare period number means different things per sport
+  // (basketball Q2, volleyball 2nd set, esports 1st map), so the
+  // feed's own period name is the label whenever it exists —
+  // "2nd set", "4th quarter", "1st map" — and the bare number is
+  // only a fallback when the feed sends no name at all.
   const period = scores.currentPeriod;
-  const pname = String(scores.currentPeriodName || "").toLowerCase();
-  if (period === 1 || pname.includes("1st half")) return { status: "1H", minute };
-  if (period === 2 || pname.includes("2nd half")) return { status: "2H", minute };
-  if (period === 3 || period === 4 || pname.includes("extra"))
-    return { status: "ET", minute };
-  if (pname.includes("penalt")) return { status: "PEN", minute };
-  return { status: scores.currentPeriodName || "?", minute };
+  const pname = String(scores.currentPeriodName || "");
+  const pl = pname.toLowerCase();
+  if (pl.includes("1st half")) return { status: "1H", minute };
+  if (pl.includes("2nd half")) return { status: "2H", minute };
+  if (pl.includes("extra")) return { status: "ET", minute };
+  if (pl.includes("penalt")) return { status: "PEN", minute };
+  if (pname) return { status: pname, minute };
+  if (period === 1) return { status: "1H", minute };
+  if (period === 2) return { status: "2H", minute };
+  if (period === 3 || period === 4) return { status: "ET", minute };
+  return { status: "?", minute };
+}
+
+// Sport + per-period scores carried through normalization. The
+// live entry carries sport {id, name} (1 Football, 3 Basketball,
+// 6 Volleyball, 40 Esports, 66 Cricket...) and scores carry
+// periodScoresStr ("25-17,9-7" — per-set / per-quarter /
+// per-map scores). The page shows the period row from these;
+// football and cricket are excluded there (halves carry no
+// scores; cricket has its own innings display).
+function sportOf(g) {
+  const sp = (g && g.sport) || null;
+  return {
+    sportId: sp && typeof sp.id === "number" ? sp.id : null,
+    sportName: sp && sp.name ? String(sp.name) : null,
+  };
+}
+
+function periodInfo(scores) {
+  if (!scores) return { periodScoresStr: null, currentPeriodName: null };
+  return {
+    periodScoresStr: scores.periodScoresStr
+      ? String(scores.periodScoresStr)
+      : null,
+    currentPeriodName: scores.currentPeriodName
+      ? String(scores.currentPeriodName)
+      : null,
+  };
 }
 
 // 1xBet live cricket: the score (with wickets) and the overs live
@@ -436,10 +475,14 @@ function normalizeFeatured(g) {
   const hs = scores.scoreOpp1;
   const as = scores.scoreOpp2;
   const ck = cricketLive(scores);
-  // statusOf reports the period ("1H"/"2H"/"ET"/"PEN") — but the
-  // site only renders the ticking clock for status "live", so a
-  // live game reported as "2H" showed a frozen minute instead of
-  // a ticking timer (found 17 Nov 2026). In-play periods are all
+  const sp = sportOf(g);
+  const pi = periodInfo(scores);
+  // statusOf reports the period — "1H"/"2H"/"ET"/"PEN" for
+  // football, the feed's own period name ("2nd set", "4th
+  // quarter", "1st map") for other sports — but the site only
+  // renders the ticking clock for status "live", so a live game
+  // reported as "2H" showed a frozen minute instead of a
+  // ticking timer (found 17 Nov 2026). In-play periods are all
   // "live" here; the period is kept separately for the label.
   const period = status;
   const hasScore =
@@ -460,6 +503,10 @@ function normalizeFeatured(g) {
     status: liveStatus,
     period,
     minute,
+    sport: sp.sportName,
+    sportId: sp.sportId,
+    periodScoresStr: pi.periodScoresStr,
+    currentPeriodName: pi.currentPeriodName,
     clock: (ck && ck.clock) || scores.statusLineStr || "",
     startTs: typeof g.startTs === "number" ? g.startTs : null,
     format: "",
@@ -482,6 +529,58 @@ async function featuredGames(base) {
   );
   if (!Array.isArray(data)) throw new Error("unexpected body");
   return data.map(normalizeFeatured).filter(Boolean);
+}
+
+// Top Games, all sports: the featured list (topGamesByStat) is
+// football-only in practice, so the board's "all sports" section
+// is built from the live list instead — up to 2 live games per
+// sport, then the featured games fill what is left, capped at 12.
+// A busy hour can still push a sport out of the live list's
+// first 50 (the endpoint's max) — that cap is upstream, not
+// fixable here.
+const TOP_PER_SPORT = 2;
+const TOP_MAX_GAMES = 12;
+
+async function topGames(base) {
+  let live = [];
+  try {
+    const data = await fetchJson(
+      base,
+      "/service-api/main-live-feed/v3/games1x2?cfView=3&count=50&country=130&fcountry=130&gr=909&grMode=4&lng=en&ref=1",
+      "/en/live/football"
+    );
+    if (Array.isArray(data))
+      live = data.map(normalizeFeatured).filter(Boolean);
+  } catch (e) {
+    live = [];
+  }
+  const perSport = {};
+  const picked = [];
+  for (const g of live) {
+    if (g.status !== "live") continue;
+    const key =
+      g.sportId != null
+        ? String(g.sportId)
+        : g.sportName || "other";
+    perSport[key] = (perSport[key] || 0) + 1;
+    if (perSport[key] <= TOP_PER_SPORT) picked.push(g);
+    if (picked.length >= TOP_MAX_GAMES) break;
+  }
+  let feat = [];
+  try {
+    feat = await featuredGames(base);
+  } catch (e) {
+    feat = [];
+  }
+  const out = [];
+  const seen = new Set();
+  for (const g of [...picked, ...feat]) {
+    if (!g || seen.has(g.id)) continue;
+    seen.add(g.id);
+    out.push(g);
+    if (out.length >= TOP_MAX_GAMES) break;
+  }
+  return out;
 }
 
 // --- NPL mode ------------------------------------------------------
@@ -535,6 +634,7 @@ function normalizeNpl(g, liveById, liveByName) {
   const hs = scores ? scores.scoreOpp1 : null;
   const as = scores ? scores.scoreOpp2 : null;
   const ck = scores ? cricketLive(scores) : null;
+  const pi = periodInfo(scores);
   if (ck && ck.clock) clock = ck.clock;
   const info = g.matchInfoObj || {};
   // Stream id: the raw entry's video {enabled, id}, else the
@@ -549,6 +649,10 @@ function normalizeNpl(g, liveById, liveByName) {
     awayScore: ck ? ck.away : (typeof as === "number" ? as : null),
     status,
     minute,
+    sport: "Cricket",
+    sportId: 66,
+    periodScoresStr: pi.periodScoresStr,
+    currentPeriodName: pi.currentPeriodName,
     clock,
     startTs,
     format: info.matchFormat || "T20",
@@ -745,7 +849,23 @@ function findLigaGames(menu, champId) {
 
 // Line-feed game (fixtures + any live game still listed): same
 // shape as the NPL normalizer, but with the caller's league name.
-function normalizeUefaLine(g, league) {
+// sportId is the 1xBet sport (1 Football, 3 Basketball, 6
+// Volleyball, 66 Cricket...) — the line feed's selectedMs must
+// name it, so the caller passes it in.
+const SPORT_NAMES = {
+  1: "Football",
+  2: "Ice Hockey",
+  3: "Basketball",
+  4: "Tennis",
+  5: "Baseball",
+  6: "Volleyball",
+  40: "Esports",
+  66: "Cricket",
+};
+
+function normalizeUefaLine(g, league, sportId) {
+  const sid = typeof sportId === "number" ? sportId : 1;
+  const sname = SPORT_NAMES[sid] || "Football";
   const o1 = g.opponent1 || {};
   const o2 = g.opponent2 || {};
   const home = o1.fullName || "";
@@ -769,6 +889,7 @@ function normalizeUefaLine(g, league) {
     clock = "Live";
   }
   const ck = scores ? cricketLive(scores) : null;
+  const pi = periodInfo(scores);
   if (ck && ck.clock) clock = ck.clock;
   return {
     id: String(id),
@@ -779,6 +900,10 @@ function normalizeUefaLine(g, league) {
     awayScore: ck ? ck.away : (scores && typeof scores.scoreOpp2 === "number" ? scores.scoreOpp2 : null),
     status,
     minute,
+    sport: sname,
+    sportId: sid,
+    periodScoresStr: pi.periodScoresStr,
+    currentPeriodName: pi.currentPeriodName,
     clock,
     startTs,
     format: "",
@@ -814,7 +939,7 @@ async function uefaGames(base) {
   // Upcoming fixtures for the same UEFA champs (line feed).
   for (const cid of champIds.slice(0, UEFA_MAX_CHAMPS)) {
     try {
-      const games = await lineGamesForChamp(base, cid, "UEFA");
+      const games = await lineGamesForChamp(base, 1, cid, "UEFA");
       for (const ng of games) {
         if (!out.some((x) => sameTeams(x, ng))) out.push(ng);
       }
@@ -849,20 +974,38 @@ const KNOWN_CHAMPS = [
   { id: 118587, name: "UEFA Champions League" },
 ];
 
+// Known leagues for OTHER sports, for the same upcoming-fixtures
+// fallback. Champ ids verified live from the line feed (28 Nov
+// 2026): Big Bash Women 1852059 and WNBL 258051 each listed 3
+// upcoming games. NBA / IPL / ATP champ ids still need harvesting
+// when those leagues are live.
+const KNOWN_LEAGUES = [
+  { sportId: 66, sportName: "Cricket", id: 1852059, name: "Big Bash League. Women" },
+  { sportId: 66, sportName: "Cricket", id: 2148332, name: "Quaid e-Azam Trophy" },
+  { sportId: 3, sportName: "Basketball", id: 24625, name: "WKBL" },
+  { sportId: 3, sportName: "Basketball", id: 258051, name: "WNBL" },
+  { sportId: 6, sportName: "Volleyball", id: 122261, name: "South Korea Championship" },
+  { sportId: 6, sportName: "Volleyball", id: 2768529, name: "SV.League" },
+];
+
 // Upcoming fixtures for one champ, from the line feed.
 // (The UEFA section used to inline this per champ; it now calls
 // this too.)
-async function lineGamesForChamp(base, champId, leagueName) {
+async function lineGamesForChamp(base, sportId, champId, leagueName) {
+  const sid = typeof sportId === "number" ? sportId : 1;
+  const path =
+    "/en/line/" +
+    (SPORT_NAMES[sid] || "Football").toLowerCase().replace(" ", "");
   const menu = await fetchJson(
     base,
     "/service-api/main-line-feed/v3/leftMenuSports?country=130&fcountry=130&gr=909&lng=en&ref=1" +
-      "&selectedMs=1.1." + champId + ",2.1." + champId + ",10.1." + champId,
-    "/en/line/football"
+      "&selectedMs=1." + sid + "." + champId + ",2." + sid + "." + champId + ",10." + sid + "." + champId,
+    path
   );
   const found = findLigaGames(menu, champId);
   if (!found) return [];
   return found.games
-    .map((g) => normalizeUefaLine(g, found.name || leagueName))
+    .map((g) => normalizeUefaLine(g, found.name || leagueName, sid))
     .filter(Boolean);
 }
 
@@ -952,6 +1095,11 @@ function detailFromInfo(info) {
     ),
     video: Boolean(info.video && info.video.enabled),
   };
+  // Only include sportId when gameInfo actually carries one —
+  // the merge in gameDetail must never overwrite the live
+  // entry's id with null (same rule as videoId below).
+  if (info.sport && typeof info.sport.id === "number")
+    out.sportId = info.sport.id;
   // Only include videoId when gameInfo actually carries one —
   // the merge in gameDetail must never overwrite the raw live
   // entry's id with null (the raw entry is the authority).
@@ -1004,11 +1152,14 @@ async function findUpcomingById(base, id) {
     sources.push(...(await uefaGames(base)));
   } catch (e) {}
   try {
-    const line = await Promise.all(
-      KNOWN_CHAMPS.map((c) =>
-        lineGamesForChamp(base, c.id, c.name).catch(() => [])
-      )
-    );
+    const line = await Promise.all([
+      ...KNOWN_CHAMPS.map((c) =>
+        lineGamesForChamp(base, 1, c.id, c.name).catch(() => [])
+      ),
+      ...KNOWN_LEAGUES.map((l) =>
+        lineGamesForChamp(base, l.sportId, l.id, l.name).catch(() => [])
+      ),
+    ]);
     for (const games of line) sources.push(...games);
   } catch (e) {}
   return sources.find((g) => String(g.id) === String(id)) || null;
@@ -1086,6 +1237,11 @@ async function searchGames(base, q) {
           status: "?",
           period: "",
           minute: null,
+          sport: (info.sport && info.sport.name) || null,
+          sportId:
+            info.sport && typeof info.sport.id === "number"
+              ? info.sport.id
+              : null,
           clock: "Score not available right now",
           startTs: typeof info.startTs === "number" ? info.startTs : null,
           format: "",
@@ -1151,11 +1307,14 @@ async function searchGames(base, q) {
     // parallel (one round-trip). A champ failing never breaks
     // the search.
     try {
-      const line = await Promise.all(
-        KNOWN_CHAMPS.map((c) =>
-          lineGamesForChamp(base, c.id, c.name).catch(() => [])
-        )
-      );
+      const line = await Promise.all([
+        ...KNOWN_CHAMPS.map((c) =>
+          lineGamesForChamp(base, 1, c.id, c.name).catch(() => [])
+        ),
+        ...KNOWN_LEAGUES.map((l) =>
+          lineGamesForChamp(base, l.sportId, l.id, l.name).catch(() => [])
+        ),
+      ]);
       for (const games of line) games.forEach(push);
     } catch (e) {}
   }
@@ -1206,7 +1365,7 @@ export default async function handler(req, res) {
         return;
       }
       const result = featured
-        ? { games: await featuredGames(base), usedOfficial: false }
+        ? { games: await topGames(base), usedOfficial: false }
         : await nplGames(base);
       const games = result.games;
       const out = {
