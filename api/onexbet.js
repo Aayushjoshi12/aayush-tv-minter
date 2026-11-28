@@ -166,6 +166,12 @@ function statusOf(scores) {
   if (pl.includes("2nd half")) return { status: "2H", minute };
   if (pl.includes("extra")) return { status: "ET", minute };
   if (pl.includes("penalt")) return { status: "PEN", minute };
+  // The break itself: some games carry "Half-time" as the period
+  // name while the status line says something else — normalise it
+  // to HT (the page shows a ticking clock otherwise, and the
+  // detail panel keys off "HT"), same for a finished game.
+  if (pl.includes("half-time") || pl.includes("half time") || pl.includes("break")) return { status: "HT", minute };
+  if (pl.includes("full-time") || pl.includes("full time") || pl.includes("finished")) return { status: "FT", minute };
   if (pname) return { status: pname, minute };
   if (period === 1) return { status: "1H", minute };
   if (period === 2) return { status: "2H", minute };
@@ -542,21 +548,43 @@ const TOP_PER_SPORT = 2;
 const TOP_MAX_GAMES = 12;
 
 async function topGames(base) {
-  let live = [];
-  try {
-    const data = await fetchJson(
-      base,
-      "/service-api/main-live-feed/v3/games1x2?cfView=3&count=50&country=130&fcountry=130&gr=909&grMode=4&lng=en&ref=1",
-      "/en/live/football"
-    );
-    if (Array.isArray(data))
-      live = data.map(normalizeFeatured).filter(Boolean);
-  } catch (e) {
-    live = [];
+  // Both legs run in parallel: sequential, a hung leg cost the
+  // whole mode 10s + 10s = 20s (the mirror intermittently hangs
+  // Vercel's requests while answering other IPs in ~1s), and the
+  // page gives up after 8s — so a sequential 20s failure always
+  // looked like an empty board. Each leg also gets its own 5s cap:
+  // Promise.allSettled alone is not enough, because it still waits
+  // for the hung leg to hit its 10s abort. If BOTH legs fail or
+  // time out, throw (the caller then tries the next mirror) — an
+  // empty array used to be returned here, which the caller read
+  // as "no games" and never fell through to the second mirror.
+  function leg(p) {
+    return Promise.race([
+      p,
+      new Promise((res) => setTimeout(() => res(null), 5000)),
+    ]);
   }
+  const [live, feat] = await Promise.all([
+    leg(
+      fetchJson(
+        base,
+        "/service-api/main-live-feed/v3/games1x2?cfView=3&count=50&country=130&fcountry=130&gr=909&grMode=4&lng=en&ref=1",
+        "/en/live/football"
+      )
+        .then((data) =>
+          Array.isArray(data) ? data.map(normalizeFeatured).filter(Boolean) : []
+        )
+        .catch(() => null)
+    ),
+    leg(featuredGames(base).catch(() => null)),
+  ]);
+  if (live === null && feat === null)
+    throw new Error("topGames: both feeds failed");
+  const liveGames = live || [];
+  const featGames = feat || [];
   const perSport = {};
   const picked = [];
-  for (const g of live) {
+  for (const g of liveGames) {
     if (g.status !== "live") continue;
     const key =
       g.sportId != null
@@ -566,15 +594,9 @@ async function topGames(base) {
     if (perSport[key] <= TOP_PER_SPORT) picked.push(g);
     if (picked.length >= TOP_MAX_GAMES) break;
   }
-  let feat = [];
-  try {
-    feat = await featuredGames(base);
-  } catch (e) {
-    feat = [];
-  }
   const out = [];
   const seen = new Set();
-  for (const g of [...picked, ...feat]) {
+  for (const g of [...picked, ...featGames]) {
     if (!g || seen.has(g.id)) continue;
     seen.add(g.id);
     out.push(g);
