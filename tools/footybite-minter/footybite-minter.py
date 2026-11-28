@@ -7,7 +7,8 @@ Chain (reverse-engineered 28 Nov 2026, live from the aayushbot VM):
   match record with 4 signed /api/stream/seg?u=...&exp=...&sig=... URLs
   (Server 1..4, each a master-playlist URL) ->
   GET Server 1's seg URL with the browser's 5 headers over HTTP/2 ->
-  master playlist (640x360, ~1.1 Mbps) -> variant seg URL ->
+  master playlist (one variant per server; qualities differ per server
+  and match — the minter ranks them by resolution) -> variant seg URL ->
   media playlist -> segments (same seg endpoint, CORS *).
 
 The browser cannot mint directly: the seg endpoint answers 403 to a bare
@@ -31,6 +32,7 @@ where curl succeeds, the fallback is to shell out to curl from the minter
 
 No signed URL, token or key is ever logged or stored on disk.
 """
+import asyncio
 import json
 import re
 import time
@@ -176,13 +178,26 @@ async def _fetch_seg(client, match_id, url):
     return text
 
 
-def _first_playlist_url(master):
-    """The variant URL in a master playlist: the first non-# line."""
-    for line in master.splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            return line
-    raise HTTPException(status_code=502, detail="master playlist has no variant")
+def _variant_info(master):
+    """Every variant in a master playlist as (pixels, bandwidth, url).
+    RESOLUTION WxH gives pixels; a variant with no RESOLUTION
+    (audio-only or unlabelled) counts as 0 pixels and ranks last."""
+    out = []
+    lines = master.splitlines()
+    for i, line in enumerate(lines):
+        s = line.strip()
+        if not s.startswith("#EXT-X-STREAM-INF"):
+            continue
+        bw_m = re.search(r"BANDWIDTH=(\d+)", s)
+        bw = int(bw_m.group(1)) if bw_m else 0
+        res_m = re.search(r"RESOLUTION=(\d+)x(\d+)", s)
+        pixels = int(res_m.group(1)) * int(res_m.group(2)) if res_m else 0
+        for nxt in lines[i + 1:]:
+            t = nxt.strip()
+            if t and not t.startswith("#"):
+                out.append((pixels, bw, t))
+                break
+    return out
 
 
 def _absolutize(playlist):
@@ -197,25 +212,46 @@ def _absolutize(playlist):
 
 
 async def _get_media_playlist(match_id):
-    """Mint fresh + fetch master -> variant -> media, with retries.
-    Every attempt mints a new set of signed URLs; within one attempt all
-    servers are tried in order before re-minting."""
+    """Mint fresh + fetch every server's master -> rank the variants by
+    resolution (then bandwidth) -> fetch the best one's media playlist.
+    Servers differ per match: one probe of match 910 gave 640x360 on
+    Server 1, 1280x720 on Server 2 and an unlabelled 250k rendition on
+    Server 3 — taking Server 1 blindly served the low quality. The
+    ranking happens fresh on every call; if the best server's media
+    fetch fails, the next best is tried. Retries re-mint."""
     last_err = None
     for _ in range(MAX_ATTEMPTS):
         try:
             async with _client() as client:
                 urls = await _mint_seg_urls(client, match_id)
-                for seg_url in urls:
+                masters = await asyncio.gather(
+                    *[_fetch_seg(client, match_id, u) for u in urls],
+                    return_exceptions=True)
+                candidates = []
+                for order, (seg_url, master) in enumerate(zip(urls, masters)):
+                    if isinstance(master, Exception):
+                        if isinstance(master, _SegForbidden):
+                            last_err = "seg 403"
+                        else:
+                            last_err = str(master)[:100]
+                        continue
+                    for pixels, bw, variant_url in _variant_info(master):
+                        if variant_url.startswith("/"):
+                            variant_url = BASE + variant_url
+                        candidates.append((pixels, bw, -order, variant_url))
+                # Highest resolution first, then bandwidth; the earlier
+                # server wins ties.
+                candidates.sort(reverse=True)
+                for pixels, bw, _neg, variant_url in candidates:
                     try:
-                        master = await _fetch_seg(client, match_id, seg_url)
+                        media = await _fetch_seg(client, match_id, variant_url)
+                        return _absolutize(media)
                     except _SegForbidden:
                         last_err = "seg 403"
                         continue
-                    variant_url = _first_playlist_url(master)
-                    if variant_url.startswith("/"):
-                        variant_url = BASE + variant_url
-                    media = await _fetch_seg(client, match_id, variant_url)
-                    return _absolutize(media)
+                if not candidates:
+                    last_err = last_err or "no playable servers"
+                    continue
         except _NoServers:
             raise HTTPException(
                 status_code=404, detail="no playable servers for this match")
