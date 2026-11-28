@@ -221,6 +221,24 @@ _ALIASES = {
     "dortmund": "borussia dortmund", "bvb": "borussia dortmund",
     "psg": "paris saint-germain", "paris": "paris saint-germain",
     "psv": "psv eindhoven", "sporting": "sporting cp",
+    "gunners": "arsenal", "gooners": "arsenal",
+    "red devils": "manchester united", "blues": "chelsea",
+    "galacticos": "real madrid", "magpies": "newcastle united",
+    "hammers": "west ham united", "toffees": "everton",
+    "foxes": "leicester city", "villans": "aston villa",
+    "celts": "celtic",
+}
+
+# Famous fixtures named as one phrase ("el clasico") — the generic
+# two-word split would turn these into two nonsense teams ("el" /
+# "clasico"), so they are matched whole before any splitting.
+_FIXTURES = {
+    "el clasico": ("barcelona", "real madrid"),
+    "el classico": ("barcelona", "real madrid"),
+    "manchester derby": ("manchester city", "manchester united"),
+    "north london derby": ("arsenal", "tottenham"),
+    "merseyside derby": ("liverpool", "everton"),
+    "derby della madonnina": ("ac milan", "inter milan"),
 }
 
 _FILLER = {
@@ -229,6 +247,9 @@ _FILLER = {
     "me", "find", "please", "for", "of", "on", "at", "vs", "v", "versus",
     "against", "stream", "streaming", "where", "when", "can", "i", "get",
     "this", "weekend", "now",
+    "next", "score", "scores", "winning", "win", "won", "result", "results",
+    "kickoff", "time", "starts", "start", "upcoming", "last", "what", "how",
+    "do", "does", "did", "and", "or", "fixture", "fixtures",
 }
 
 
@@ -399,6 +420,9 @@ def _parse_teams(q):
     text = _expand_aliases(_norm(q))
     if not text:
         return None
+    for phrase, teams in _FIXTURES.items():
+        if phrase in text:
+            return teams
     for sep in (" vs ", " v ", " - ", " against "):
         if sep in text:
             a, b = text.split(sep, 1)
