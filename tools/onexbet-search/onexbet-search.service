@@ -1,0 +1,16 @@
+[Unit]
+Description=1xBet search — Live Sports search on the VM (mirror egress)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=onexbet
+WorkingDirectory=/opt/onexbet-search
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/opt/onexbet-search/.venv/bin/python -m uvicorn onexbet_search:app --host 127.0.0.1 --port 8809
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
