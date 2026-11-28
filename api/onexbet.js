@@ -1017,51 +1017,63 @@ async function lineGamesForChamp(base, sportId, champId, leagueName) {
 // champ's timing and outcome is recorded there, so a slow leg can
 // be diagnosed from the live server (?debug=1).
 async function fetchLineLeg(base, champs, wantDebug) {
-  const out = await Promise.all(
-    champs.map(async (c) => {
-      const t0 = Date.now();
-      const rec = wantDebug
-        ? { champ: c.id, sport: c.sportId, ms: 0, games: 0 }
-        : null;
-      if (rec) wantDebug.push(rec);
-      try {
-        const games = await lineGamesForChamp(base, c.sportId, c.id, c.name);
-        if (rec) {
-          rec.ms = Date.now() - t0;
-          rec.games = games.length;
-        }
-        return games;
-      } catch (e) {
-        // A timeout abort is not retried — the mirror is just
-        // slow for that champ right now, and a second 10s wait
-        // would hold up the whole search. Connection errors
-        // (resets) get one retry instead.
-        if (e && e.name === "AbortError") {
-          if (rec) {
-            rec.ms = Date.now() - t0;
-            rec.error = "timeout";
-          }
-          return [];
-        }
+  // The mirror 529s concurrent leftMenuSports requests past ~6
+  // from one IP — seen live on Vercel (28 Nov 2026): the first 6
+  // champs succeeded in ~200ms and the rest all came back
+  // HTTP 529. Fetch in batches of 3 so the limit is never
+  // approached; a failed champ is retried once after a short
+  // pause (an immediate retry 529s again).
+  const BATCH = 3;
+  const all = [];
+  for (let i = 0; i < champs.length; i += BATCH) {
+    const batch = champs.slice(i, i + BATCH);
+    const results = await Promise.all(
+      batch.map(async (c) => {
+        const t0 = Date.now();
+        const rec = wantDebug
+          ? { champ: c.id, sport: c.sportId, ms: 0, games: 0 }
+          : null;
+        if (rec) wantDebug.push(rec);
         try {
           const games = await lineGamesForChamp(base, c.sportId, c.id, c.name);
           if (rec) {
             rec.ms = Date.now() - t0;
             rec.games = games.length;
-            rec.retried = true;
           }
           return games;
-        } catch (e2) {
-          if (rec) {
-            rec.ms = Date.now() - t0;
-            rec.error = String((e2 && e2.message) || e2);
+        } catch (e) {
+          // A timeout abort is not retried — the mirror is just
+          // slow for that champ right now, and a second 10s wait
+          // would hold up the whole search.
+          if (e && e.name === "AbortError") {
+            if (rec) {
+              rec.ms = Date.now() - t0;
+              rec.error = "timeout";
+            }
+            return [];
           }
-          return [];
+          await new Promise((r) => setTimeout(r, 1000));
+          try {
+            const games = await lineGamesForChamp(base, c.sportId, c.id, c.name);
+            if (rec) {
+              rec.ms = Date.now() - t0;
+              rec.games = games.length;
+              rec.retried = true;
+            }
+            return games;
+          } catch (e2) {
+            if (rec) {
+              rec.ms = Date.now() - t0;
+              rec.error = String((e2 && e2.message) || e2);
+            }
+            return [];
+          }
         }
-      }
-    })
-  );
-  return out.flat();
+      })
+    );
+    all.push(...results.flat());
+  }
+  return all;
 }
 
 // Nicknames for the search box ("barca" must find Barcelona —
